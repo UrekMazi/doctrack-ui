@@ -1,0 +1,9 @@
+Flask==3.1.0
+Flask-CORS==5.0.1
+Flask-JWT-Extended==4.7.1
+flask-sqlalchemy==3.1.1
+bcrypt==4.3.0
+openpyxl==3.1.5
+paddleocr>=2.7.0
+paddlepaddle>=2.6.0
+pypdfium2>=4.30.0
