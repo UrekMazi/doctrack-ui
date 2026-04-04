@@ -17,7 +17,10 @@ export default function Sidebar({ currentUser }) {
         </div>
         <div className="sidebar-brand-text">
           <h5>Philippine Ports Authority</h5>
-          <small>PMO-Negros Occidental/Bacolod/Banago Records Process Flow</small>
+          <div className="sidebar-brand-subtitle">
+            <span>PMO-Negros Occidental/Bacolod/Banago</span>
+            <span>Records Process Flow</span>
+          </div>
         </div>
       </div>
 
@@ -129,7 +132,7 @@ export default function Sidebar({ currentUser }) {
       </nav>
 
       <div style={{ padding: '16px 20px', fontSize: 13, color: '#65676b', textAlign: 'center' }}>
-        PPA - Records Process Flow v2.0
+        PPA-PMO-NOB Records Flow
       </div>
     </aside>
   )
