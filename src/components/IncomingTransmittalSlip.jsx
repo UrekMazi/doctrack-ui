@@ -54,7 +54,7 @@ const IncomingTransmittalSlip = forwardRef(function IncomingTransmittalSlip(
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '6px 8px', borderBottom: '2px solid #002868', minHeight: 56 }}>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', width: `${qrWrapperWidth}px`, margin: '0 auto', flexShrink: 0 }}>
           <div style={{ width: `${qrSize}px`, height: `${qrSize}px`, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
-            <QRCodeSVG value={`PPA|${trackingNumber}`} size={qrSize} level="M" />
+            <QRCodeSVG value={`PPA-PMO-NOB|${trackingNumber}`} size={qrSize} level="M" />
           </div>
           <span style={{ fontSize: '10px', marginTop: '4px', color: '#555', lineHeight: 1 }}>
             {trackingNumber}
@@ -108,7 +108,7 @@ const IncomingTransmittalSlip = forwardRef(function IncomingTransmittalSlip(
 
 
       <div style={{ display: 'flex', borderBottom: '1px solid #000' }}>
-        <div style={{ width: 84, padding: '3px 4px', fontWeight: 700, fontSize: TYPE_SCALE.label, borderRight: '1px solid #000', background: '#f0f0f0' }}>PMO Ref No:</div>
+        <div style={{ width: 84, padding: '3px 4px', fontWeight: 700, fontSize: TYPE_SCALE.label, borderRight: '1px solid #000', background: '#f0f0f0' }}>Control/Reference #:</div>
         <div style={{ flex: 1, padding: '3px 4px', fontFamily: 'monospace', fontWeight: 700, fontSize: TYPE_SCALE.emphasis, color: '#002868' }}>{trackingNumber}</div>
       </div>
 

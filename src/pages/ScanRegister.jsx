@@ -22,7 +22,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 const SCAN_STEPS = [
   'Scan & Upload to EDMS',
   'PDF Conversion & OCR',
-  'Assign Control # & Auto-fill Details',
+  'Assign Control/Reference # & Auto-fill Details',
   'Print Transmittal Slip & Sticker',
 ]
 
@@ -276,7 +276,8 @@ export default function ScanRegister() {
     extracted.targetDivisions,
   )
   const transmittalDivisionCodes = selectedDivisionCodes.filter((code) => code && code !== 'OTHER')
-  const transmittalMainDivisionCode = transmittalDivisionCodes[0] || ''
+  const resolvedTransmittalDivisionCodes = transmittalDivisionCodes.length > 0 ? transmittalDivisionCodes : ['OPM']
+  const transmittalMainDivisionCode = resolvedTransmittalDivisionCodes[0] || ''
   const transmittalRemarksContent = extracted.remarks
     ? <div style={{ marginBottom: 4 }}>{extracted.remarks}</div>
     : null
@@ -287,7 +288,7 @@ export default function ScanRegister() {
     dateOfComm: extracted.dateOfComm,
     subject: extracted.subject,
     dueDate: extracted.dueDate,
-    selectedDivisionCodes: transmittalDivisionCodes,
+    selectedDivisionCodes: resolvedTransmittalDivisionCodes,
     mainDivisionCode: transmittalMainDivisionCode,
     commentsRemarksContent: transmittalRemarksContent,
   }
@@ -297,26 +298,21 @@ export default function ScanRegister() {
 
     if (!String(extracted.subject || '').trim()) metadataMissing.push('Subject')
     if (!String(extracted.sender || '').trim()) metadataMissing.push('Sender Name')
-    if (!String(extracted.dateOfComm || '').trim()) metadataMissing.push('Date of Communication')
     if (!String(receiveInfo.receivedDate || '').trim()) metadataMissing.push('Stamped Date Received')
     if (!String(receiveInfo.receivedTime || '').trim()) metadataMissing.push('Stamped Time Received')
 
     const metadataReady = metadataMissing.length === 0
-    const routingReady = selectedDivisionCodes.length > 0
 
     return {
       metadataMissing,
       metadataReady,
-      routingReady,
-      ready: metadataReady && routingReady,
+      ready: metadataReady,
     }
   }, [
     extracted.sender,
-    extracted.dateOfComm,
     extracted.subject,
     receiveInfo.receivedDate,
     receiveInfo.receivedTime,
-    selectedDivisionCodes,
   ])
 
   const clearPreparedAssets = () => {
@@ -567,8 +563,6 @@ export default function ScanRegister() {
       if (!ocrData.subject) missing.push('Subject')
       if (!ocrData.sender) missing.push('Sender / FROM')
       if (!ocrData.senderAddress) missing.push('FROM Division / Address')
-      if (!ocrData.thru) missing.push('THRU')
-      if (!ocrData.dateOfComm) missing.push('Date of Communication')
 
       const finalPageCount = detectedPages || (slides.length > 0 ? slides.length : 1)
       const avgOcr = ocrResult?.ocrConfidence || 0
@@ -630,7 +624,7 @@ export default function ScanRegister() {
     return parsed.toISOString().slice(0, 10)
   }
 
-  // Step 1 → 2: EDMS assigns control/tracking # and extracts details to transmittal slip
+  // Step 1 → 2: EDMS assigns control/reference # and extracts details to transmittal slip
   const assignControlNumber = () => {
     try {
       const tn = generateTrackingNumber()
@@ -643,7 +637,7 @@ export default function ScanRegister() {
         }, 0)
       }
     } catch (err) {
-      toast.error(err?.message || 'Unable to generate control/tracking number.')
+      toast.error(err?.message || 'Unable to generate control/reference number.')
     }
   }
 
@@ -746,7 +740,7 @@ export default function ScanRegister() {
     ctx.textBaseline = 'top'
     ctx.textAlign = 'center'
     ctx.font = `600 ${Math.max(8, 7 * scale)}px Arial`
-    ctx.fillText('CONTROL / TRACKING #', ctrlX + ctrlStampW / 2, ctrlY)
+    ctx.fillText('CONTROL / REFERENCE #', ctrlX + ctrlStampW / 2, ctrlY)
     ctx.font = `800 ${Math.max(11, 12 * scale)}px monospace`
     ctx.fillText(trackingNumber, ctrlX + ctrlStampW / 2, ctrlY + Math.max(8, 8 * scale))
     ctx.textAlign = 'start'
@@ -953,16 +947,13 @@ export default function ScanRegister() {
       const metadataMsg = registerReadiness.metadataMissing.length > 0
         ? `Metadata missing: ${previewMissing}${remainingMissing > 0 ? ` (+${remainingMissing} more)` : ''}.`
         : ''
-      const routingMsg = !registerReadiness.routingReady
-        ? 'Routing not ready: choose a Target Division.'
-        : ''
 
-      toast.error([metadataMsg, routingMsg].filter(Boolean).join(' '))
+      toast.error(metadataMsg)
       return
     }
 
     if (!trackingNumber) {
-      toast.error('Control/Tracking number is required before registration.')
+      toast.error('Control/Reference number is required before registration.')
       return
     }
 
@@ -992,10 +983,7 @@ export default function ScanRegister() {
       return
     }
 
-    if (!resolvedTargetDivision) {
-      toast.error('Target Division is required for routing.')
-      return
-    }
+    // Note: Target Division routing is handled by the PM role, not the operator
 
     const assignedAtMs = controlAssignedAtRef.current || now.getTime()
     const registeredAtMs = now.getTime()
@@ -1086,7 +1074,7 @@ export default function ScanRegister() {
         remarks: extracted.remarks,
         routingHistory: [
           { office: 'Records Section', action: 'Received & Timestamped', date: dateStr, time: timeStr, user: receiveInfo.receivedBy, status: 'done' },
-          { office: 'EDMS', action: 'Scanned, PDF/OCR Processed, Control # Assigned', date: dateStr, time: timeStr, user: 'System', status: 'done' },
+          { office: 'EDMS', action: 'Scanned, PDF/OCR Processed, Control/Reference # Assigned', date: dateStr, time: timeStr, user: 'System', status: 'done' },
           { office: 'Records Section', action: 'Transmittal Slip & Sticker Printed', date: dateStr, time: timeStr, user: receiveInfo.receivedBy, status: 'done' },
         ],
       }
@@ -1198,7 +1186,7 @@ export default function ScanRegister() {
     const html = `<!DOCTYPE html>
 <html>
 <head>
-  <title>Control # Sticker — ${trackingNumber}</title>
+  <title>Control/Reference # Sticker — ${trackingNumber}</title>
   <style>
     @page { size: letter; margin: 0; }
     @media print { .no-print { display: none !important; } }
@@ -1416,7 +1404,6 @@ export default function ScanRegister() {
                           { label: 'FROM (Address)', key: 'senderAddress' },
                           { label: 'Subject', key: 'subject' },
                           { label: 'Document Type', key: 'type' },
-                          { label: 'Date of Comm.', key: 'dateOfComm' },
                         ].map(({ label, key }) => {
                           const conf = fieldConfidence[key] || 'none'
                           const val = extracted[key]
@@ -1454,7 +1441,7 @@ export default function ScanRegister() {
         </Row>
       )}
 
-      {/* ===== STEP 2: Assign Control # & Auto-fill Details ===== */}
+      {/* ===== STEP 2: Assign Control/Reference # & Auto-fill Details ===== */}
       {step === 2 && (
         <Row className="g-4">
           <Col lg={5}>
@@ -1473,7 +1460,7 @@ export default function ScanRegister() {
                     style={{ fontSize: 11 }}
                     title="Click to show and drag the Control Number onto the document."
                   >
-                    <i className="bi bi-pin-angle me-1"></i>Stamp Control #
+                    <i className="bi bi-pin-angle me-1"></i>Stamp Control/Reference #
                   </Button>
                 </div>
               </div>
@@ -1557,7 +1544,7 @@ export default function ScanRegister() {
                         letterSpacing: 0.3, marginBottom: 1,
                         textShadow: '0 0 2px rgba(255,255,255,0.9)',
                       }}>
-                        CONTROL / TRACKING #
+                        CONTROL / REFERENCE #
                       </div>
                       <div style={{
                         fontFamily: 'monospace', fontSize: 12, fontWeight: 800,
@@ -1668,7 +1655,7 @@ export default function ScanRegister() {
                       <Form.Control value={extracted.subject} onChange={e => handleChange('subject', e.target.value)} className={!extracted.subject ? 'border-warning' : ''} placeholder="Type the document subject here" />
                     </Form.Group>
                   </Col>
-                  <Col md={6}>
+                  <Col md={4}>
                     <Form.Group>
                       <Form.Label className="fw-semibold d-flex align-items-center gap-1" style={{ fontSize: 13 }}>
                         Document Type
@@ -1678,6 +1665,12 @@ export default function ScanRegister() {
                         <option value="">Select type...</option>
                         {DOCUMENT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
                       </Form.Select>
+                    </Form.Group>
+                  </Col>
+                  <Col md={2}>
+                    <Form.Group>
+                      <Form.Label className="fw-semibold" style={{ fontSize: 13 }}>Pages</Form.Label>
+                      <Form.Control type="number" min="1" value={extracted.pages} onChange={e => handleChange('pages', e.target.value)} />
                     </Form.Group>
                   </Col>
                   <Col md={6}>
@@ -1700,21 +1693,6 @@ export default function ScanRegister() {
                     <Form.Group>
                       <Form.Label className="fw-semibold" style={{ fontSize: 13 }}>Sender Ref. No.</Form.Label>
                       <Form.Control value={extracted.senderRefNo} onChange={e => handleChange('senderRefNo', e.target.value)} placeholder="Optional" />
-                    </Form.Group>
-                  </Col>
-                  <Col md={4}>
-                    <Form.Group>
-                      <Form.Label className="fw-semibold d-flex align-items-center gap-1" style={{ fontSize: 13 }}>
-                        Date of Comm. *
-                        <FieldBadge conf={fieldConfidence.dateOfComm} />
-                      </Form.Label>
-                      <Form.Control
-                        type="text"
-                        value={extracted.dateOfComm}
-                        onChange={e => handleChange('dateOfComm', e.target.value)}
-                        placeholder="YYYY-MM-DD"
-                        className={!String(extracted.dateOfComm || '').trim() ? 'border-warning' : ''}
-                      />
                     </Form.Group>
                   </Col>
                   <Col md={4}>
@@ -1747,12 +1725,6 @@ export default function ScanRegister() {
                       />
                     </Form.Group>
                   </Col>
-                  <Col md={3}>
-                    <Form.Group>
-                      <Form.Label className="fw-semibold" style={{ fontSize: 13 }}>Pages</Form.Label>
-                      <Form.Control type="number" min="1" value={extracted.pages} onChange={e => handleChange('pages', e.target.value)} />
-                    </Form.Group>
-                  </Col>
                   <Col md={12}>
                     <Form.Group>
                       <Form.Label className="fw-semibold" style={{ fontSize: 13 }}>Comments / Instructions</Form.Label>
@@ -1776,10 +1748,7 @@ export default function ScanRegister() {
                     <i className={`bi ${registerReadiness.metadataReady ? 'bi-check-circle-fill' : 'bi-exclamation-triangle-fill'} me-1`}></i>
                     Metadata: {registerReadiness.metadataReady ? 'Ready' : `${registerReadiness.metadataMissing.length} field(s) missing`}
                   </span>
-                  <span className={`badge ${registerReadiness.routingReady ? 'bg-success' : 'bg-warning text-dark'}`} style={{ fontSize: 11 }}>
-                    <i className={`bi ${registerReadiness.routingReady ? 'bi-signpost-2-fill' : 'bi-signpost-split-fill'} me-1`}></i>
-                    Routing: {registerReadiness.routingReady ? 'Ready' : 'Select Target Division'}
-                  </span>
+
                 </div>
 
                 <hr />
@@ -1829,7 +1798,7 @@ export default function ScanRegister() {
         </Row>
       )}
 
-      {/* ===== STEP 3: Print Transmittal Slip & Control # Sticker ===== */}
+      {/* ===== STEP 3: Print Transmittal Slip & Control/Reference # Sticker ===== */}
       {step === 3 && (
         <>
           <Alert variant="success" className="d-flex align-items-center gap-3 mb-4">
@@ -1863,11 +1832,11 @@ export default function ScanRegister() {
 
             </Col>
 
-            {/* Control # Sticker */}
+            {/* Control/Reference # Sticker */}
             <Col lg={6}>
               <div className="content-card mb-3">
                 <div className="content-card-header">
-                  <h6><i className="bi bi-stickies me-2"></i>Control # Sticker</h6>
+                  <h6><i className="bi bi-stickies me-2"></i>Control/Reference # Sticker</h6>
                   <Button size="sm" variant="outline-primary" onClick={printSticker}>
                     <i className="bi bi-printer me-1"></i>Print Sticker
                   </Button>
@@ -1880,7 +1849,7 @@ export default function ScanRegister() {
                     boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
                   }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                      <QRCodeSVG value={`PPA|${trackingNumber}`} size={64} level="M" />
+                      <QRCodeSVG value={`PPA-PMO-NOB|${trackingNumber}`} size={64} level="M" />
                       <div>
                         <div style={{ fontSize: 7, color: '#6c757d', textTransform: 'uppercase', letterSpacing: 1 }}>Philippine Ports Authority</div>
                         <div style={{ fontFamily: 'monospace', fontSize: 14, fontWeight: 700, color: '#002868' }}>{trackingNumber}</div>
@@ -1906,7 +1875,7 @@ export default function ScanRegister() {
                   <div className="d-flex flex-column gap-2" style={{ fontSize: 13 }}>
                     <div className="d-flex align-items-start gap-2">
                       <i className="bi bi-printer-fill text-primary mt-1" style={{ fontSize: 16 }}></i>
-                      <span><strong>Print & Attach:</strong> Print the <strong>Transmittal Slip</strong> and <strong>Control # Sticker</strong>, then attach them to the physical document.</span>
+                      <span><strong>Print & Attach:</strong> Print the <strong>Transmittal Slip</strong> and <strong>Control/Reference # Sticker</strong>, then attach them to the physical document.</span>
                     </div>
                     <div className="d-flex align-items-start gap-2">
                       <i className="bi bi-send-fill text-warning mt-1" style={{ fontSize: 16 }}></i>

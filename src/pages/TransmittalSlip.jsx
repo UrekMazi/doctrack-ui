@@ -132,7 +132,7 @@ export default function TransmittalSlip() {
         <div style={slipStyle}>
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '6px 8px 4px', borderBottom: '2px solid #000' }}>
             <div style={{ width: 80, textAlign: 'center', lineHeight: 1, flexShrink: 0 }}>
-              <QRCodeSVG value={`PPA|${doc.trackingNumber}`} size={64} level="M" />
+              <QRCodeSVG value={`PPA-PMO-NOB|${doc.trackingNumber}`} size={64} level="M" />
               <div style={{ fontSize: typeScale.tiny, color: '#555', marginTop: 2, fontFamily: 'monospace', fontWeight: 700 }}>
                 {doc.trackingNumber}
               </div>
