@@ -1,3 +1,9 @@
 node_modules/
 .venv/
 dist/
+
+# Python cache artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
