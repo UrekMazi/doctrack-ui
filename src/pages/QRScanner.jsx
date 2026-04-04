@@ -166,7 +166,7 @@ export default function QRScanner() {
 
               {/* Manual Input */}
               <div className="mb-3">
-                <small className="text-muted fw-semibold">Or enter tracking / control number:</small>
+                <small className="text-muted fw-semibold">Or enter control/reference number:</small>
               </div>
               <form onSubmit={handleManualLookup}>
                 <div className="d-flex gap-2">
@@ -253,7 +253,7 @@ export default function QRScanner() {
 
                   <Col md={4} className="text-center">
                     <QRCodeSVG
-                      value={`PPA|${scannedDoc.trackingNumber}`}
+                      value={`PPA-PMO-NOB|${scannedDoc.trackingNumber}`}
                       size={140}
                       level="M"
                       includeMargin

@@ -50,7 +50,7 @@ export function DocumentProvider({ children }) {
           console.log(`Migrating ${localDocs.length} documents from Dexie to Flask...`)
           
           for (const doc of localDocs) {
-            // Check if backend already has this document by tracking number
+            // Check if backend already has this document by control/reference number
             const exists = backendDocs?.find(bd => bd.trackingNumber === doc.trackingNumber)
             
             if (exists) {

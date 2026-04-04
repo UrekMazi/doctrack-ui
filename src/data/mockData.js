@@ -53,7 +53,7 @@ export const USERS = [
   { id: 7, name: 'Angela Cruz', role: 'Division Staff', division: 'Engineering Services Division (ESD)', username: 'div3', systemRole: 'Division' },
 ]
 
-// Generate tracking numbers like 260318-001 (YYMMDD-XXX), resets daily at midnight.
+// Generate control/reference numbers like 260318-001 (YYMMDD-XXX), resets daily at midnight.
 const TRACKING_COUNTER_KEY = 'ppa_tracking_daily_counter_v1'
 let trackingCounterFallback = { dateKey: '', count: 0 }
 
@@ -97,7 +97,7 @@ export function generateTrackingNumber(now = new Date()) {
   }
 
   if (nextState.count >= 100) {
-    throw new Error('Daily control/tracking number limit reached (100). Counter resets at 12:00 AM.')
+    throw new Error('Daily control/reference number limit reached (100). Counter resets at 12:00 AM.')
   }
 
   nextState = { ...nextState, count: nextState.count + 1 }
@@ -133,7 +133,7 @@ export const INCOMING_DOCUMENTS = [
     remarks: '',
     routingHistory: [
       { office: 'Records Section', action: 'Received & Timestamped', date: '2026-03-08', time: '09:15', user: 'Records Section', status: 'done' },
-      { office: 'EDMS', action: 'Scanned, PDF/OCR Processed, Control # Assigned', date: '2026-03-08', time: '09:17', user: 'System', status: 'done' },
+      { office: 'EDMS', action: 'Scanned, PDF/OCR Processed, Control/Reference # Assigned', date: '2026-03-08', time: '09:17', user: 'System', status: 'done' },
       { office: 'Records Section', action: 'Transmittal Slip & Sticker Printed', date: '2026-03-08', time: '09:18', user: 'Records Section', status: 'done' },
       { office: 'Office of the Port Manager (OPM)', action: 'Endorsed (Physical + Digital via EDMS)', date: '2026-03-08', time: '09:30', user: 'Records Section', status: 'done' },
       { office: 'Port Police Division (PPD)', action: 'Routed by PM (Physical + Digital)', date: '2026-03-08', time: '10:45', user: 'OPM Staff', status: 'done' },
@@ -160,7 +160,7 @@ export const INCOMING_DOCUMENTS = [
     remarks: 'Urgent review required',
     routingHistory: [
       { office: 'Records Section', action: 'Received & Timestamped', date: '2026-03-09', time: '10:30', user: 'Records Section', status: 'done' },
-      { office: 'EDMS', action: 'Scanned, PDF/OCR Processed, Control # Assigned', date: '2026-03-09', time: '10:32', user: 'System', status: 'done' },
+      { office: 'EDMS', action: 'Scanned, PDF/OCR Processed, Control/Reference # Assigned', date: '2026-03-09', time: '10:32', user: 'System', status: 'done' },
       { office: 'Records Section', action: 'Transmittal Slip & Sticker Printed', date: '2026-03-09', time: '10:33', user: 'Records Section', status: 'done' },
       { office: 'Office of the Port Manager (OPM)', action: 'Endorsed (Physical + Digital via EDMS)', date: '2026-03-09', time: '10:45', user: 'Records Section', status: 'done' },
       { office: 'Finance Division', action: 'Routed by PM (Physical + Digital)', date: '2026-03-09', time: '14:00', user: 'OPM Staff', status: 'done' },
@@ -186,7 +186,7 @@ export const INCOMING_DOCUMENTS = [
     remarks: '',
     routingHistory: [
       { office: 'Records Section', action: 'Received & Timestamped', date: '2026-03-10', time: '08:45', user: 'Records Section', status: 'done' },
-      { office: 'EDMS', action: 'Scanned, PDF/OCR Processed, Control # Assigned', date: '2026-03-10', time: '08:47', user: 'System', status: 'done' },
+      { office: 'EDMS', action: 'Scanned, PDF/OCR Processed, Control/Reference # Assigned', date: '2026-03-10', time: '08:47', user: 'System', status: 'done' },
       { office: 'Records Section', action: 'Transmittal Slip & Sticker Printed', date: '2026-03-10', time: '08:48', user: 'Records Section', status: 'done' },
       { office: 'Office of the Port Manager (OPM)', action: 'Endorsed (Physical + Digital via EDMS)', date: '2026-03-10', time: '09:00', user: 'Records Section', status: 'done' },
     ],
@@ -211,7 +211,7 @@ export const INCOMING_DOCUMENTS = [
     remarks: 'For immediate attention',
     routingHistory: [
       { office: 'Records Section', action: 'Received & Timestamped', date: '2026-03-10', time: '11:20', user: 'Records Section', status: 'done' },
-      { office: 'EDMS', action: 'Scanned, PDF/OCR Processed, Control # Assigned', date: '2026-03-10', time: '11:22', user: 'System', status: 'done' },
+      { office: 'EDMS', action: 'Scanned, PDF/OCR Processed, Control/Reference # Assigned', date: '2026-03-10', time: '11:22', user: 'System', status: 'done' },
       { office: 'Records Section', action: 'Transmittal Slip & Sticker Printed', date: '2026-03-10', time: '11:23', user: 'Records Section', status: 'done' },
     ],
   },
@@ -235,7 +235,7 @@ export const INCOMING_DOCUMENTS = [
     remarks: '',
     routingHistory: [
       { office: 'Records Section', action: 'Received & Timestamped', date: '2026-03-10', time: '14:00', user: 'Records Section', status: 'done' },
-      { office: 'EDMS', action: 'Scanned, PDF/OCR Processed, Control # Assigned', date: '2026-03-10', time: '14:02', user: 'System', status: 'done' },
+      { office: 'EDMS', action: 'Scanned, PDF/OCR Processed, Control/Reference # Assigned', date: '2026-03-10', time: '14:02', user: 'System', status: 'done' },
       { office: 'Records Section', action: 'Transmittal Slip & Sticker Printed', date: '2026-03-10', time: '14:03', user: 'Records Section', status: 'done' },
     ],
   },

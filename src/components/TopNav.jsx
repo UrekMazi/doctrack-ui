@@ -24,7 +24,7 @@ export default function TopNav({ currentUser, onLogout }) {
         <i className="bi bi-search"></i>
         <input
           type="text"
-          placeholder="Search by tracking number, subject, or sender..."
+          placeholder="Search by control/reference number, subject, or sender..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
         />

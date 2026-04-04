@@ -51,7 +51,7 @@ export default function OutgoingDocuments() {
             <Col md={4}>
               <Form.Control
                 size="sm"
-                placeholder="Search tracking #, subject, recipient..."
+                placeholder="Search control/reference #, subject, recipient..."
                 value={searchTerm}
                 onChange={e => setSearchTerm(e.target.value)}
               />

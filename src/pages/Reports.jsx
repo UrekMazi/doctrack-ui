@@ -77,7 +77,7 @@ export default function Reports() {
 
   const handleExport = () => {
     // Build CSV content
-    const headers = ['DATE/CONTROL NO.', 'Time', 'FROM', 'Address', 'SUBJECT', 'TO OPM', 'Date Received', 'Time Received', 'Status', 'Remarks']
+    const headers = ['DATE/CONTROL-REF NO.', 'Time', 'FROM', 'Address', 'SUBJECT', 'TO OPM', 'Date Received', 'Time Received', 'Status', 'Remarks']
     const rows = filtered.map(e => [
       e.trackingNumber, e.timeReceived,
       `"${e.sender}"`, `"${e.senderAddress || ''}"`, `"${e.subject}"`, e.targetDivision, e.dateReceived, e.timeReceived, e.status, `"${e.remarks}"`
@@ -195,7 +195,7 @@ export default function Reports() {
             <thead>
               <tr>
                 <th style={{ width: 40 }}>#</th>
-                <th style={{ width: 130 }}>DATE / CONTROL NO.</th>
+                <th style={{ width: 130 }}>DATE / CONTROL-REF NO.</th>
                 <th style={{ width: 160 }}>FROM</th>
                 <th style={{ minWidth: 220 }}>SUBJECT</th>
                 <th style={{ width: 130 }}>TO OPM</th>

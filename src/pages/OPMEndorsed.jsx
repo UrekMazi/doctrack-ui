@@ -145,7 +145,7 @@ export default function OPMEndorsed({ currentUser }) {
             <Col md={4}>
               <Form.Control
                 size="sm"
-                placeholder="Search tracking #, subject, sender..."
+                placeholder="Search control/reference #, subject, sender..."
                 value={searchTerm}
                 onChange={e => setSearchTerm(e.target.value)}
               />

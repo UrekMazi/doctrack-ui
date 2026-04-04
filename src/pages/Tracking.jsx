@@ -54,7 +54,7 @@ export default function Tracking() {
               <Col md={8}>
                 <Form.Control
                   size="lg"
-                  placeholder="Enter tracking number, control number, subject, or sender..."
+                  placeholder="Enter control/reference number, subject, or sender..."
                   value={query}
                   onChange={e => setQuery(e.target.value)}
                   style={{ fontSize: 15 }}

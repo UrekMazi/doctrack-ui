@@ -165,7 +165,7 @@ def create_document():
         })
         error_text = str(getattr(exc, 'orig', exc)).lower()
         if 'tracking_number' in error_text and 'unique' in error_text:
-            return jsonify({'error': 'Control/Tracking number already exists. Generate a new number and retry.'}), 409
+            return jsonify({'error': 'Control/Reference number already exists. Generate a new number and retry.'}), 409
         return jsonify({'error': 'Document save failed due to a data integrity constraint.'}), 400
     except SQLAlchemyError as exc:
         db.session.rollback()
@@ -248,7 +248,7 @@ def update_document(doc_id):
         })
         error_text = str(getattr(exc, 'orig', exc)).lower()
         if 'tracking_number' in error_text and 'unique' in error_text:
-            return jsonify({'error': 'Control/Tracking number already exists. Generate a new number and retry.'}), 409
+            return jsonify({'error': 'Control/Reference number already exists. Generate a new number and retry.'}), 409
         return jsonify({'error': 'Document update failed due to a data integrity constraint.'}), 400
     except SQLAlchemyError as exc:
         db.session.rollback()
@@ -275,7 +275,7 @@ def save_document_files(tracking_number):
 
     storage_root, storage_folder = get_storage_root(data.get('storageFolder'))
 
-    # Create dedicated folder per control/tracking number.
+    # Create dedicated folder per control/reference number.
     target_dir = os.path.join(storage_root, tracking_number)
     
     try:

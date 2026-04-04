@@ -44,7 +44,7 @@ def export_xlsx():
     ws['A1'].alignment = Alignment(horizontal='center')
 
     # Column headers (row 3)
-    headers = ['#', 'DATE / CONTROL NO.', 'FROM', 'SUBJECT', 'TO OPM', 'IN', 'OUT', 'DURATION']
+    headers = ['#', 'DATE / CONTROL-REF NO.', 'FROM', 'SUBJECT', 'TO OPM', 'IN', 'OUT', 'DURATION']
     col_widths = [5, 20, 25, 40, 20, 10, 10, 10]
 
     for col_idx, (header, width) in enumerate(zip(headers, col_widths), 1):

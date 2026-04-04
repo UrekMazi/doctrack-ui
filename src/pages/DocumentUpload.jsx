@@ -47,7 +47,7 @@ export default function DocumentUpload() {
     try {
       tracking = generateTrackingNumber()
     } catch (err) {
-      toast.error(err?.message || 'Unable to generate control/tracking number.')
+      toast.error(err?.message || 'Unable to generate control/reference number.')
       return
     }
 

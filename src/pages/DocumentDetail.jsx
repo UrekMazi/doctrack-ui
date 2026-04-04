@@ -1441,7 +1441,7 @@ export default function DocumentDetail({ currentUser }) {
           </div>
         </Col>
 
-        {/* Right: Control # Sticker + Transmittal + Attachments */}
+        {/* Right: Control/Reference # Sticker + Transmittal + Attachments */}
         <Col lg={4}>
           {isOpmAssistant && isForOpmReview && (
             <div className="content-card mb-4" style={{ border: '2px solid #0d6efd', boxShadow: '0 4px 12px rgba(13,110,253,0.15)' }}>
@@ -1461,7 +1461,7 @@ export default function DocumentDetail({ currentUser }) {
                   <Form.Control
                     type="text"
                     size="sm"
-                    placeholder="Type tracking number exactly..."
+                    placeholder="Type control/reference number exactly..."
                     value={digitalAcknowledgeTyped}
                     onChange={(e) => setDigitalAcknowledgeTyped(String(e.target.value).trim())}
                     isInvalid={digitalAcknowledgeTyped.length > 0 && digitalAcknowledgeTyped !== doc.trackingNumber}

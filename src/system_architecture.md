@@ -19,13 +19,13 @@ Actual flow:
 1. Operator uploads one or more files (PDF/image) in Scan & Register.
 2. System captures receive timestamp immediately (`receivedDate`, `receivedTime`).
 3. OCR pipeline runs and extracts metadata (subject, sender, sender address, dates, action hints, routing hints).
-4. Operator assigns a generated Control/Tracking Number (`generateTrackingNumber`).
+4. Operator assigns a generated Control/Reference Number (`generateTrackingNumber`).
 5. Operator reviews/edits extracted metadata. Register action is blocked until required metadata and routing target are valid.
 6. System generates attachment artifacts (original PDF, stamped PNG, stamped PDF), saves files externally (folder picker or backend file endpoint), and persists lightweight attachment metadata in the document record.
 7. Document is saved via `addDocument(...)` with status set to `Registered`.
 8. Initial `routingHistory` audit entries are written:
    - `Received & Timestamped`
-   - `Scanned, PDF/OCR Processed, Control # Assigned`
+   - `Scanned, PDF/OCR Processed, Control/Reference # Assigned`
    - `Transmittal Slip & Sticker Printed`
 
 Fields persisted at this stage include:
@@ -327,7 +327,7 @@ Primary implementation:
 Bridge behavior:
 
 1. Physical document QR (`PPA|<trackingNumber>`) is scanned by camera or entered manually.
-2. System resolves digital document record by control/tracking number.
+2. System resolves digital document record by control/reference number.
 3. In division receive context, scan confirmation updates digital receipt records and status progression.
 4. Routing timeline reflects that physical handoff was digitally acknowledged.
 
@@ -341,7 +341,7 @@ Primary implementation:
 
 Traceability views:
 
-- global search by tracking number/subject/sender
+- global search by control/reference number/subject/sender
 - document-level timeline (`routingHistory`) in detail view
 - reporting/monitoring log with filters and exports
 
