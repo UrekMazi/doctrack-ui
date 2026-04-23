@@ -20,6 +20,11 @@ try:
 except ImportError:
     pdfium = None
 
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
 
 ocr_bp = Blueprint('ocr', __name__)
 logger = logging.getLogger(__name__)
@@ -69,6 +74,9 @@ DATE_SNIPPET_PATTERN = re.compile(
 
 DOC_TYPE_MEMO_PATTERN = re.compile(r'\bMEMORANDUM\b', re.IGNORECASE)
 DOC_TYPE_AUTHORITY_PATTERN = re.compile(r'\bAUTHORITY\s+TO\s+PAY\b', re.IGNORECASE)
+
+DEFAULT_PDF_RENDER_SCALE = 2.0
+DEFAULT_PDF_TARGET_PAGE = 1
 
 
 def _get_ocr_engine():
@@ -529,6 +537,86 @@ def _normalize_date(raw_value):
     return raw
 
 
+def _resolve_pdf_target_page(total_pages):
+    try:
+        parsed = int(os.environ.get('DOCTRACK_OCR_TARGET_PAGE', str(DEFAULT_PDF_TARGET_PAGE)))
+    except (TypeError, ValueError):
+        parsed = DEFAULT_PDF_TARGET_PAGE
+
+    # Accept 1-based page input from env for operator friendliness.
+    page_index = max(1, parsed) - 1
+    return min(max(0, total_pages - 1), page_index)
+
+
+def _resolve_pdf_render_scale():
+    try:
+        parsed = float(os.environ.get('DOCTRACK_OCR_PDF_SCALE', str(DEFAULT_PDF_RENDER_SCALE)))
+    except (TypeError, ValueError):
+        parsed = DEFAULT_PDF_RENDER_SCALE
+    return min(3.0, max(1.2, parsed))
+
+
+def _suppress_long_form_lines(binary_image):
+    if cv2 is None or binary_image is None:
+        return binary_image
+
+    try:
+        height, width = binary_image.shape[:2]
+        horizontal_span = max(40, int(width * 0.18))
+        vertical_span = max(40, int(height * 0.18))
+
+        horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (horizontal_span, 1))
+        vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, vertical_span))
+
+        # Work on an inverted copy so long dark rules become connected white components.
+        inverted = cv2.bitwise_not(binary_image)
+        horizontal_lines = cv2.morphologyEx(inverted, cv2.MORPH_OPEN, horizontal_kernel)
+        vertical_lines = cv2.morphologyEx(inverted, cv2.MORPH_OPEN, vertical_kernel)
+        line_mask = cv2.bitwise_or(horizontal_lines, vertical_lines)
+
+        cleaned_inverted = cv2.subtract(inverted, line_mask)
+        return cv2.bitwise_not(cleaned_inverted)
+    except Exception:
+        return binary_image
+
+
+def _preprocess_image_for_ocr(image):
+    """Light denoise/contrast prep for noisy scans with pen marks/checks."""
+    if cv2 is None or image is None:
+        return image
+
+    try:
+        if getattr(image, 'ndim', 0) == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image
+
+        # Improve local contrast for faint typewritten text.
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
+
+        # Remove pepper noise and small pen artifacts without erasing text strokes.
+        denoised = cv2.medianBlur(enhanced, 3)
+
+        # Keep binary text strong for OCR while suppressing background texture.
+        binary = cv2.adaptiveThreshold(
+            denoised,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            31,
+            12,
+        )
+
+        # Drop dominant table/guide lines that often break OCR segmentation on scanned forms.
+        binary = _suppress_long_form_lines(binary)
+
+        cleaned = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+        return cleaned
+    except Exception:
+        return image
+
+
 def _prepare_ocr_input(file_path, extension):
     if extension != '.pdf':
         return file_path
@@ -541,25 +629,30 @@ def _prepare_ocr_input(file_path, extension):
         if len(pdf) < 1:
             raise ValueError('Uploaded PDF has no pages.')
 
-        images = []
-        for page_index in range(len(pdf)):
-            page = pdf[page_index]
-            bitmap = page.render(scale=2.0)
-            image = bitmap.to_numpy()
+        render_scale = _resolve_pdf_render_scale()
+        total_pages = len(pdf)
+        target_page_index = _resolve_pdf_target_page(total_pages)
+        page = pdf[target_page_index]
+        bitmap = page.render(scale=render_scale)
+        image = bitmap.to_numpy()
 
-            if image is None:
-                continue
+        if image is None:
+            raise ValueError('Failed to rasterize selected PDF page for OCR.')
 
-            # Strip alpha channel if present.
-            if getattr(image, 'ndim', 0) == 3 and image.shape[-1] == 4:
-                image = image[:, :, :3]
+        # Strip alpha channel if present.
+        if getattr(image, 'ndim', 0) == 3 and image.shape[-1] == 4:
+            image = image[:, :, :3]
 
-            images.append(image)
+        image = _preprocess_image_for_ocr(image)
 
-        if not images:
-            raise ValueError('Failed to rasterize any PDF pages for OCR.')
+        if total_pages > 1:
+            logger.info(
+                '[OCR] PDF detected: total_pages=%s, selected_page=%s (set DOCTRACK_OCR_TARGET_PAGE to adjust)',
+                total_pages,
+                target_page_index + 1,
+            )
 
-        return images
+        return image
     finally:
         pdf.close()
 
@@ -584,14 +677,7 @@ def extract_metadata():
 
         ocr_input = _prepare_ocr_input(temp_path, extension)
         engine = _get_ocr_engine()
-        result = []
-        if isinstance(ocr_input, list):
-            for img in ocr_input:
-                page_res = engine.ocr(img)
-                if page_res and len(page_res) > 0:
-                    result.append(page_res[0])
-        else:
-            result = engine.ocr(ocr_input)
+        result = engine.ocr(ocr_input)
 
         debug_enabled = _is_truthy(os.environ.get('DOCTRACK_OCR_DEBUG')) or _is_truthy(request.args.get('debug'))
         main_page = _find_main_page(result)

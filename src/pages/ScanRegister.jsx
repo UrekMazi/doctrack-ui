@@ -43,6 +43,59 @@ const createDefaultReceiveInfo = () => ({
   deliveryMode: 'Hand-delivered',
 })
 
+const RECEIVED_STAMP_PREFIX = String(import.meta.env.VITE_RECEIVED_STAMP_PREFIX || 'PPA-PMO-NBB').trim().toUpperCase() || 'PPA-PMO-NBB'
+const STAMP_MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
+const RECEIVED_STAMP_WIDTH = 120
+const RECEIVED_STAMP_HEIGHT = 30
+const RECEIVED_STAMP_TOP_FONT = 7
+const RECEIVED_STAMP_BOTTOM_FONT = 12
+
+const formatReceivedStampDate = (dateValue) => {
+  const raw = String(dateValue || '').trim() || getCurrentDateInputValue()
+  const directMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (directMatch) {
+    const year = directMatch[1]
+    const monthIndex = Number(directMatch[2]) - 1
+    const day = directMatch[3]
+    if (monthIndex >= 0 && monthIndex < STAMP_MONTHS.length) {
+      return `${day}${STAMP_MONTHS[monthIndex]}${year.slice(-2)}`
+    }
+  }
+
+  const parsed = new Date(raw)
+  if (!Number.isNaN(parsed.getTime())) {
+    const day = String(parsed.getDate()).padStart(2, '0')
+    const month = STAMP_MONTHS[parsed.getMonth()] || 'JAN'
+    const year = String(parsed.getFullYear()).slice(-2)
+    return `${day}${month}${year}`
+  }
+
+  return '01JAN00'
+}
+
+const formatReceivedStampTime = (timeValue) => {
+  const raw = String(timeValue || '').trim() || getCurrentTimeInputValue()
+  const directMatch = raw.match(/^(\d{1,2}):(\d{2})/)
+  if (directMatch) {
+    return `${directMatch[1].padStart(2, '0')}:${directMatch[2]}`
+  }
+
+  const parsed = new Date(`1970-01-01T${raw}`)
+  if (!Number.isNaN(parsed.getTime())) {
+    const hh = String(parsed.getHours()).padStart(2, '0')
+    const mm = String(parsed.getMinutes()).padStart(2, '0')
+    return `${hh}:${mm}`
+  }
+
+  return '00:00'
+}
+
+const getReceivedStampTextLines = (dateValue, timeValue) => {
+  const headerLine = `${RECEIVED_STAMP_PREFIX} RECEIVED`
+  const dateTimeLine = `${formatReceivedStampDate(dateValue)} ${formatReceivedStampTime(timeValue)}`
+  return { headerLine, dateTimeLine }
+}
+
 const DIVISION_CODE_MAP = {
   'Administrative Division': 'ADM',
   'Port Services Division (PSD)': 'PSD',
@@ -158,6 +211,9 @@ export default function ScanRegister() {
   const [ctrlStampPos, setCtrlStampPos] = useState({ x: 0, y: 0 })
   const [ctrlStampVisible, setCtrlStampVisible] = useState(true)
   const ctrlStampElRef = useRef(null)
+  const [receivedStampPos, setReceivedStampPos] = useState({ x: 0, y: 0 })
+  const [receivedStampVisible, setReceivedStampVisible] = useState(true)
+  const receivedStampElRef = useRef(null)
 
   // Track whether any stamp was just dragged (to suppress container onClick)
   const justDraggedRef = useRef(false)
@@ -170,6 +226,8 @@ export default function ScanRegister() {
     const h = el.offsetHeight
     // Place control number overlay near center-bottom for easy drag adjustment.
     setCtrlStampPos({ x: Math.max(0, (w - 130) / 2), y: Math.max(0, h - 70) })
+    // Place received stamp near bottom-left by default.
+    setReceivedStampPos({ x: 16, y: Math.max(0, h - (RECEIVED_STAMP_HEIGHT + 18)) })
   }, [])
 
   // Seiko timestamp fields default to now, but remain editable to match physical stamp.
@@ -185,6 +243,10 @@ export default function ScanRegister() {
   })
 
   const activePreview = previewSlides[activePreviewIndex] || null
+  const receivedStampLines = useMemo(
+    () => getReceivedStampTextLines(receiveInfo.receivedDate, receiveInfo.receivedTime),
+    [receiveInfo.receivedDate, receiveInfo.receivedTime]
+  )
 
   // Per-field OCR confidence: 'high' | 'partial' | 'none'
   const [fieldConfidence, setFieldConfidence] = useState({})
@@ -245,6 +307,11 @@ export default function ScanRegister() {
     [makeStampDragHandler]
   )
 
+  const handleReceivedStampMouseDown = useCallback(
+    (e) => makeStampDragHandler(setReceivedStampPos, receivedStampElRef, RECEIVED_STAMP_WIDTH, RECEIVED_STAMP_HEIGHT)(e),
+    [makeStampDragHandler]
+  )
+
   // Cleanup object URL on unmount or when preview changes
   useEffect(() => {
     return () => {
@@ -271,13 +338,8 @@ export default function ScanRegister() {
     thru: '',
     thruDivision: '',
   })
-  const selectedDivisionCodes = toDivisionCodes(
-    extracted.targetDivision || extracted.addressedToDivision,
-    extracted.targetDivisions,
-  )
-  const transmittalDivisionCodes = selectedDivisionCodes.filter((code) => code && code !== 'OTHER')
-  const resolvedTransmittalDivisionCodes = transmittalDivisionCodes.length > 0 ? transmittalDivisionCodes : ['OPM']
-  const transmittalMainDivisionCode = resolvedTransmittalDivisionCodes[0] || ''
+  const transmittalDivisionCodes = []
+  const transmittalMainDivisionCode = ''
   const transmittalRemarksContent = extracted.remarks
     ? <div style={{ marginBottom: 4 }}>{extracted.remarks}</div>
     : null
@@ -288,7 +350,7 @@ export default function ScanRegister() {
     dateOfComm: extracted.dateOfComm,
     subject: extracted.subject,
     dueDate: extracted.dueDate,
-    selectedDivisionCodes: resolvedTransmittalDivisionCodes,
+    selectedDivisionCodes: transmittalDivisionCodes,
     mainDivisionCode: transmittalMainDivisionCode,
     commentsRemarksContent: transmittalRemarksContent,
   }
@@ -582,13 +644,18 @@ export default function ScanRegister() {
         pages: String(finalPageCount),
       })
 
-      // Deferred: build full preview slides in background after OCR is done
-      if (files.length > 1) {
+      // Deferred: build full preview slides in background after OCR is done.
+      // Run for both single-PDF and multi-file uploads so page navigation stays correct.
+      if (files.length > 0) {
         buildPreviewSlidesFromFiles(files).then(fullSlides => {
           setPreviewSlides(fullSlides)
-          if (fullSlides.length > 0 && !filePreviewUrl) {
-            setFilePreviewUrl(fullSlides[0].src)
-          }
+          setActivePreviewIndex((prev) => {
+            const next = Math.min(Math.max(0, prev), Math.max(0, fullSlides.length - 1))
+            if (fullSlides[next]?.src) {
+              setFilePreviewUrl(fullSlides[next].src)
+            }
+            return next
+          })
         }).catch(() => { /* preview build failed — not critical */ })
       }
 
@@ -731,19 +798,38 @@ export default function ScanRegister() {
     const scaleY = canvas.height / previewH
     const scale = (scaleX + scaleY) / 2
 
-    const ctrlX = ctrlStampPos.x * scaleX
-    const ctrlY = ctrlStampPos.y * scaleY
-    const ctrlStampW = 120 * scaleX
+    if (ctrlStampVisible) {
+      const ctrlX = ctrlStampPos.x * scaleX
+      const ctrlY = ctrlStampPos.y * scaleY
+      const ctrlStampW = 120 * scaleX
 
-    // Apply only control number overlay; physical received stamp is now manual.
-    ctx.fillStyle = '#dc3545'
-    ctx.textBaseline = 'top'
-    ctx.textAlign = 'center'
-    ctx.font = `600 ${Math.max(8, 7 * scale)}px Arial`
-    ctx.fillText('CONTROL / REFERENCE #', ctrlX + ctrlStampW / 2, ctrlY)
-    ctx.font = `800 ${Math.max(11, 12 * scale)}px monospace`
-    ctx.fillText(trackingNumber, ctrlX + ctrlStampW / 2, ctrlY + Math.max(8, 8 * scale))
-    ctx.textAlign = 'start'
+      ctx.fillStyle = '#dc3545'
+      ctx.textBaseline = 'top'
+      ctx.textAlign = 'center'
+      ctx.font = `600 ${Math.max(8, 7 * scale)}px Arial`
+      ctx.fillText('CONTROL / REFERENCE #', ctrlX + ctrlStampW / 2, ctrlY)
+      ctx.font = `800 ${Math.max(11, 12 * scale)}px monospace`
+      ctx.fillText(trackingNumber, ctrlX + ctrlStampW / 2, ctrlY + Math.max(8, 8 * scale))
+      ctx.textAlign = 'start'
+    }
+
+    if (receivedStampVisible) {
+      const receivedX = receivedStampPos.x * scaleX
+      const receivedY = receivedStampPos.y * scaleY
+      const { headerLine, dateTimeLine } = receivedStampLines
+
+      ctx.fillStyle = '#0b2f6f'
+      ctx.textBaseline = 'top'
+      ctx.textAlign = 'left'
+      ctx.shadowColor = 'rgba(255,255,255,0.88)'
+      ctx.shadowBlur = Math.max(0.8, 1.4 * scale)
+      ctx.font = `800 ${Math.max(8, 7 * scale)}px Arial`
+      ctx.fillText(headerLine, receivedX + (1 * scaleX), receivedY)
+      ctx.font = `800 ${Math.max(11, 12 * scale)}px Arial`
+      ctx.fillText(dateTimeLine, receivedX + (1 * scaleX), receivedY + Math.max(8, 8 * scale))
+      ctx.shadowColor = 'transparent'
+      ctx.shadowBlur = 0
+    }
 
     const pngDataUrl = canvas.toDataURL('image/png')
     return { canvas, pngDataUrl }
@@ -784,8 +870,8 @@ export default function ScanRegister() {
       clone.height = pages[i].height
       clone.getContext('2d').drawImage(pages[i], 0, 0)
       
-      // Only apply the stamp if it's visible AND it's the specific page the user placed it on
-      if (i === activePreviewIndex && ctrlStampVisible) {
+      // Apply stamps only on the selected preview page where the operator positioned them.
+      if (i === activePreviewIndex && (ctrlStampVisible || receivedStampVisible)) {
         const stamped = await applyStampsToCanvas(clone)
         stampedPages.push(stamped.canvas)
       } else {
@@ -834,6 +920,27 @@ export default function ScanRegister() {
     return attachment?.name || `attachment-${Date.now()}`
   }
 
+  const sanitizeSubjectForFolder = (value) => {
+    const raw = String(value || '').replace(/\r|\n/g, ' ').replace(/\s+/g, ' ').trim()
+    if (!raw) return ''
+    const cleaned = raw.replace(/[<>:"/\\|?*]/g, '').trim().replace(/[.\s]+$/g, '')
+    return cleaned.slice(0, 140).replace(/[.\s]+$/g, '')
+  }
+
+  const buildExternalDocumentFolderName = (controlNumber, subjectText = '') => {
+    const tracking = String(controlNumber || '').trim()
+    if (!tracking) return ''
+
+    const safeSubject = sanitizeSubjectForFolder(subjectText)
+    if (!safeSubject) return tracking
+
+    const maxSubjectLength = Math.max(20, 150 - tracking.length - 3)
+    const clipped = safeSubject.slice(0, maxSubjectLength).replace(/[.\s]+$/g, '')
+    if (!clipped) return tracking
+
+    return `${tracking}.[${clipped}]`
+  }
+
   const pickExternalSaveFolder = async () => {
     if (!folderPickerSupported) {
       toast.error(`${folderPickerUnavailableReason} Server auto-save will be used instead.`)
@@ -865,7 +972,7 @@ export default function ScanRegister() {
     }
   }
 
-  const saveAttachmentsViaFolderPicker = async (attachmentsToSave, controlNumber) => {
+  const saveAttachmentsViaFolderPicker = async (attachmentsToSave, controlNumber, subjectText = '') => {
     const baseHandle = saveDirHandleRef.current
     if (!baseHandle) {
       return {
@@ -875,7 +982,8 @@ export default function ScanRegister() {
     }
 
     try {
-      const targetDirHandle = await baseHandle.getDirectoryHandle(controlNumber, { create: true })
+      const targetFolderName = buildExternalDocumentFolderName(controlNumber, subjectText)
+      const targetDirHandle = await baseHandle.getDirectoryHandle(targetFolderName, { create: true })
 
       for (const attachment of attachmentsToSave) {
         if (!attachment?.dataUrl) continue
@@ -889,7 +997,8 @@ export default function ScanRegister() {
 
       return {
         ok: true,
-        directory: `${saveDirLabel}\\${controlNumber}`,
+        directory: `${saveDirLabel}\\${targetFolderName}`,
+        documentFolder: targetFolderName,
         storageFolder: '',
         mode: 'folder-picker',
       }
@@ -903,9 +1012,9 @@ export default function ScanRegister() {
   }
 
   // Function to save attachments directly via Python backend API (Solves browser restrictions)
-  const saveAttachmentsToDirectory = async (attachmentsToSave, controlNumber) => {
+  const saveAttachmentsToDirectory = async (attachmentsToSave, controlNumber, subjectText = '') => {
     if (folderPickerSupported && saveDirHandleRef.current) {
-      return saveAttachmentsViaFolderPicker(attachmentsToSave, controlNumber)
+      return saveAttachmentsViaFolderPicker(attachmentsToSave, controlNumber, subjectText)
     }
 
     const requestedStorageFolder = (storageFolderName || DEFAULT_STORAGE_FOLDER).trim() || DEFAULT_STORAGE_FOLDER
@@ -915,6 +1024,7 @@ export default function ScanRegister() {
         body: JSON.stringify({
           attachments: attachmentsToSave,
           storageFolder: requestedStorageFolder,
+          subject: subjectText,
         })
       })
 
@@ -928,6 +1038,7 @@ export default function ScanRegister() {
       return {
         ok: true,
         directory: result.directory,
+        documentFolder: result.documentFolder || buildExternalDocumentFolderName(controlNumber, subjectText),
         storageFolder: result.storageFolder || requestedStorageFolder,
       }
     } catch (err) {
@@ -963,10 +1074,8 @@ export default function ScanRegister() {
     const normalizedDateOfComm = normalizeDateInput(extracted.dateOfComm)
     const rawDueDate = String(extracted.dueDate || '').trim()
     const normalizedDueDate = rawDueDate ? normalizeDateInput(rawDueDate) : ''
-    const routingTargetDivisions = selectedDivisionCodes
-      .map(code => String(code || '').trim())
-      .filter(Boolean)
-    const resolvedTargetDivision = String(extracted.targetDivision || '').trim() || routingTargetDivisions[0] || ''
+    const routingTargetDivisions = []
+    const resolvedTargetDivision = ''
 
     if (!dateStr || !timeStr) {
       toast.error('Date Received and Time Received are required to match the Seiko stamp.')
@@ -1016,7 +1125,7 @@ export default function ScanRegister() {
 
     if (attachments.length > 0) {
       try {
-        const externalSaveResult = await saveAttachmentsToDirectory(attachments, trackingNumber)
+        const externalSaveResult = await saveAttachmentsToDirectory(attachments, trackingNumber, extracted.subject)
         if (!externalSaveResult.ok) {
           toast.error(externalSaveResult.error || `Save canceled. Could not write files to ${STORAGE_DEST_LABEL}.`)
           return
@@ -1029,7 +1138,7 @@ export default function ScanRegister() {
           type: att.type,
           kind: att.kind,
           savedToExternal: true,
-          externalFolder: trackingNumber,
+          externalFolder: externalSaveResult.documentFolder || trackingNumber,
           externalBaseFolder: externalSaveResult.storageFolder,
         }))
       } catch (err) {
@@ -1447,32 +1556,44 @@ export default function ScanRegister() {
           <Col lg={5}>
             {/* Document preview with control number overlay */}
             <div className="content-card mb-3">
-              <div className="content-card-header d-flex align-items-center w-100 flex-nowrap overflow-hidden">
-                <h6 className="mb-0 text-truncate flex-shrink-0"><i className="bi bi-file-earmark-pdf me-2 text-danger"></i>Scanned Document Preview</h6>
-                <div className="flex-grow-1 d-flex justify-content-center">
-                  <Button
-                    size="sm"
-                    variant="outline-secondary"
-                    className="d-flex align-items-center text-nowrap flex-shrink-0 shadow-sm"
-                    onClick={() => setCtrlStampVisible(!ctrlStampVisible)}
-                    disabled={!trackingNumber}
-                    active={ctrlStampVisible}
-                    style={{ fontSize: 11 }}
-                    title="Click to show and drag the Control Number onto the document."
-                  >
-                    <i className="bi bi-pin-angle me-1"></i>Stamp Control/Reference #
-                  </Button>
+              <div className="content-card-header">
+                <div className="d-flex flex-wrap align-items-center gap-2">
+                  <h6 className="mb-0 me-auto"><i className="bi bi-file-earmark-pdf me-2 text-danger"></i>Scanned Document Preview</h6>
+                  <div className="btn-group btn-group-sm shadow-sm" role="group" aria-label="Stamp overlays">
+                    <Button
+                      size="sm"
+                      variant={ctrlStampVisible ? 'primary' : 'outline-secondary'}
+                      className="d-flex align-items-center text-nowrap"
+                      onClick={() => setCtrlStampVisible(!ctrlStampVisible)}
+                      disabled={!trackingNumber}
+                      style={{ fontSize: 11 }}
+                      title="Show and drag the Control/Reference stamp overlay."
+                    >
+                      <i className="bi bi-pin-angle me-1"></i>Control/Reference
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={receivedStampVisible ? 'primary' : 'outline-secondary'}
+                      className="d-flex align-items-center text-nowrap"
+                      onClick={() => setReceivedStampVisible(!receivedStampVisible)}
+                      style={{ fontSize: 11 }}
+                      title="Show and drag the Received stamp overlay."
+                    >
+                      <i className="bi bi-calendar2-check me-1"></i>Received Stamp
+                    </Button>
+                  </div>
                 </div>
+                {!trackingNumber && (
+                  <div className="mt-2" style={{ fontSize: 11, color: '#6c757d' }}>
+                    Assign a Control/Reference Number first to enable the Control/Reference stamp.
+                  </div>
+                )}
               </div>
               <div className="content-card-body" style={{ background: '#525659', padding: 12, borderRadius: '0 0 8px 8px' }}>
                 {previewSlides.length > 0 && (
-                  <div className="d-flex justify-content-between align-items-center mb-2 px-1" style={{ fontSize: 11, color: '#e9ecef' }}>
-                    <span>
+                  <div className="d-flex align-items-center mb-2 px-1" style={{ fontSize: 11, color: '#e9ecef' }}>
+                    <span className="text-truncate" style={{ maxWidth: '100%' }} title={activePreview?.fileName || 'Scanned File'}>
                       {activePreview?.fileName || 'Scanned File'}
-                    </span>
-                    <span>
-                      {activePreviewIndex + 1} / {previewSlides.length}
-                      {activePreview?.totalPages > 1 ? ` (Page ${activePreview.page} of ${activePreview.totalPages})` : ''}
                     </span>
                   </div>
                 )}
@@ -1482,7 +1603,7 @@ export default function ScanRegister() {
                   style={{
                     width: '100%',
                     position: 'relative',
-                    cursor: ctrlStampVisible ? 'crosshair' : 'default',
+                    cursor: (ctrlStampVisible || receivedStampVisible) ? 'crosshair' : 'default',
                     overflow: 'hidden',
                     userSelect: 'none',
                     boxShadow: '0 4px 24px rgba(0,0,0,0.3)',
@@ -1555,15 +1676,43 @@ export default function ScanRegister() {
                       </div>
                     </div>
                   )}
+
+                  {/* Draggable Received Stamp */}
+                  {receivedStampVisible && (
+                    <div
+                      ref={receivedStampElRef}
+                      onMouseDown={handleReceivedStampMouseDown}
+                      style={{
+                        position: 'absolute',
+                        left: receivedStampPos.x,
+                        top: receivedStampPos.y,
+                        cursor: 'grab',
+                        zIndex: 8,
+                        userSelect: 'none',
+                      }}
+                    >
+                      <div style={{
+                        width: RECEIVED_STAMP_WIDTH,
+                        minHeight: RECEIVED_STAMP_HEIGHT,
+                        color: '#0b2f6f',
+                        lineHeight: 1.08,
+                        textShadow: '0 0 2px rgba(255,255,255,0.95)',
+                        letterSpacing: 0.3,
+                      }}>
+                        <div style={{ fontWeight: 800, fontSize: RECEIVED_STAMP_TOP_FONT, whiteSpace: 'nowrap' }}>{receivedStampLines.headerLine}</div>
+                        <div style={{ fontWeight: 800, fontSize: RECEIVED_STAMP_BOTTOM_FONT, whiteSpace: 'nowrap' }}>{receivedStampLines.dateTimeLine}</div>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Footer Controls */}
-                <div className="mt-3 d-flex justify-content-between align-items-center">
+                <div className="mt-3 d-flex flex-wrap justify-content-between align-items-center gap-2">
                   <div>
-                    {ctrlStampVisible && (
+                    {(ctrlStampVisible || receivedStampVisible) && (
                       <div className="d-flex align-items-center gap-2" style={{ fontSize: 11 }}>
                         <i className="bi bi-arrows-move" style={{ color: '#adb5bd' }}></i>
-                        <span style={{ color: '#adb5bd' }}>Drag the control number overlay to position</span>
+                        <span style={{ color: '#adb5bd' }}>Drag visible stamps to position. Selected stamps are included in final PDF.</span>
                       </div>
                     )}
                   </div>
@@ -1584,7 +1733,7 @@ export default function ScanRegister() {
                         disabled={activePreviewIndex === 0}
                         style={{ fontSize: 11, background: '#6c757d', borderColor: '#6c757d' }}
                       >
-                        <i className="bi bi-chevron-left me-1"></i>Prev
+                        <i className="bi bi-chevron-left me-1"></i>Previous Page
                       </Button>
                       <span className="btn btn-secondary disabled d-flex align-items-center" style={{ fontSize: 11, padding: '0 10px', background: '#5a6268', borderColor: '#5a6268', opacity: 1, color: '#fff' }}>
                         {activePreviewIndex + 1} / {previewSlides.length}
@@ -1603,7 +1752,7 @@ export default function ScanRegister() {
                         disabled={activePreviewIndex >= previewSlides.length - 1}
                         style={{ fontSize: 11, background: '#6c757d', borderColor: '#6c757d' }}
                       >
-                        Next<i className="bi bi-chevron-right ms-1"></i>
+                        Next Page<i className="bi bi-chevron-right ms-1"></i>
                       </Button>
                     </div>
                   )}
@@ -1888,7 +2037,7 @@ export default function ScanRegister() {
                     <Button variant="outline-primary" onClick={() => navigate('/incoming')}>
                       <i className="bi bi-inbox me-2"></i>Go to Incoming Communications
                     </Button>
-                    <Button variant="outline-secondary" size="sm" onClick={() => { setStep(0); setFiles([]); clearPreparedAssets(); setFilePreviewUrl(''); setPreviewSlides([]); setActivePreviewIndex(0); setTrackingNumber(''); setRegistered(false); setOcrDone(false); setFieldConfidence({}); setCtrlStampPos({ x: 0, y: 0 }); setCtrlStampVisible(true); setReceiveInfo(createDefaultReceiveInfo()); setScanInfo({ paperSize: '', pageCount: 0, missingFields: [], templateType: '', ocrConfidence: 0 }); setExtracted({ subject: '', type: '', sender: '', senderAddress: '', senderRefNo: '', dateOfComm: '', dueDate: '', pages: '1', remarks: '', targetDivision: '', addressedTo: '', addressedToDivision: '', thru: '', thruDivision: '' }) }}>
+                    <Button variant="outline-secondary" size="sm" onClick={() => { setStep(0); setFiles([]); clearPreparedAssets(); setFilePreviewUrl(''); setPreviewSlides([]); setActivePreviewIndex(0); setTrackingNumber(''); setRegistered(false); setOcrDone(false); setFieldConfidence({}); setCtrlStampPos({ x: 0, y: 0 }); setCtrlStampVisible(true); setReceivedStampPos({ x: 0, y: 0 }); setReceivedStampVisible(true); setReceiveInfo(createDefaultReceiveInfo()); setScanInfo({ paperSize: '', pageCount: 0, missingFields: [], templateType: '', ocrConfidence: 0 }); setExtracted({ subject: '', type: '', sender: '', senderAddress: '', senderRefNo: '', dateOfComm: '', dueDate: '', pages: '1', remarks: '', targetDivision: '', addressedTo: '', addressedToDivision: '', thru: '', thruDivision: '' }) }}>
                       <i className="bi bi-plus-lg me-1"></i>Scan Another Document
                     </Button>
                   </div>

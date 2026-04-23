@@ -54,17 +54,21 @@ def create_app():
     from routes.documents import documents_bp
     from routes.ocr import ocr_bp
     from routes.reports import reports_bp
+    from routes.realtime import realtime_bp
 
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
     app.register_blueprint(users_bp, url_prefix='/api/users')
     app.register_blueprint(documents_bp, url_prefix='/api/documents')
     app.register_blueprint(ocr_bp, url_prefix='/api/ocr')
     app.register_blueprint(reports_bp, url_prefix='/api/reports')
+    app.register_blueprint(realtime_bp, url_prefix='/api/realtime')
 
     return app
 
 
 if __name__ == '__main__':
     app = create_app()
-    print("DocTrack Backend starting on http://localhost:3001")
-    app.run(host='0.0.0.0', port=3001, debug=True)
+    backend_host = os.environ.get('DOCTRACK_BACKEND_HOST', '127.0.0.1').strip() or '127.0.0.1'
+    backend_port = int(os.environ.get('DOCTRACK_BACKEND_PORT', '3001'))
+    print(f"DocTrack Backend starting on http://{backend_host}:{backend_port}")
+    app.run(host=backend_host, port=backend_port, debug=True)

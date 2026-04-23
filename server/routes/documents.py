@@ -8,12 +8,26 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from models import db, Document, User
+from realtime_events import publish_event
 
 documents_bp = Blueprint('documents', __name__)
 logger = logging.getLogger(__name__)
 
 DEFAULT_STORAGE_FOLDER = os.environ.get('DOCTRACK_STORAGE_FOLDER', 'DocTrack Files')
 LEGACY_STORAGE_ROOT = 'D:\\'
+MAX_COMPLETION_PROOF_BYTES = 25 * 1024 * 1024
+
+
+def _resolve_max_scan_upload_bytes():
+    try:
+        parsed_mb = int(os.environ.get('DOCTRACK_MAX_SCAN_UPLOAD_MB', '300'))
+    except (TypeError, ValueError):
+        parsed_mb = 300
+    parsed_mb = max(10, parsed_mb)
+    return parsed_mb * 1024 * 1024
+
+
+MAX_SCAN_UPLOAD_BYTES = _resolve_max_scan_upload_bytes()
 
 
 def sanitize_storage_folder(folder_name):
@@ -78,31 +92,194 @@ def dumps_or_fallback(value, fallback):
         return json.dumps(fallback)
 
 
+def parse_json_or_fallback(raw_value, fallback):
+    try:
+        if raw_value in (None, ''):
+            return fallback
+        parsed = json.loads(raw_value)
+        return parsed
+    except Exception:
+        return fallback
+
+
+def get_authenticated_user():
+    try:
+        user_id = int(get_jwt_identity())
+    except (TypeError, ValueError):
+        return None
+
+    user = db.session.get(User, user_id)
+    if not user or not user.is_active:
+        return None
+    return user
+
+
+def get_document_target_divisions(doc):
+    target_divisions = normalize_target_divisions(parse_json_or_fallback(doc.target_divisions, []))
+    target_division = normalize_string(doc.target_division)
+    if target_division and target_division not in target_divisions:
+        target_divisions.append(target_division)
+    return target_divisions
+
+
+def get_document_assigned_position(doc, division_name):
+    clean_division = normalize_string(division_name)
+    if not clean_division:
+        return ''
+
+    clean_division_lower = clean_division.lower()
+    extra_data = parse_json_or_fallback(doc.extra_data, {})
+
+    delegated_division = normalize_string(extra_data.get('assignedDivision')) if isinstance(extra_data, dict) else ''
+    delegated_position = normalize_string(extra_data.get('assignedTo')) if isinstance(extra_data, dict) else ''
+    if delegated_position and delegated_division and delegated_division.lower() == clean_division_lower:
+        return delegated_position
+
+    assignments = extra_data.get('routeAssignments') if isinstance(extra_data, dict) else {}
+    if not isinstance(assignments, dict):
+        return ''
+
+    for key, payload in assignments.items():
+        if normalize_string(key).lower() != clean_division_lower:
+            continue
+        if not isinstance(payload, dict):
+            return ''
+        return normalize_string(payload.get('position'))
+
+    return ''
+
+
+def sanitize_filename(value):
+    raw = os.path.basename(str(value or '').strip())
+    safe = ''.join(ch for ch in raw if ch.isalnum() or ch in (' ', '-', '_', '.')).strip().rstrip('.')
+    return safe[:140]
+
+
+def sanitize_subject_for_folder(value):
+    raw = str(value or '').replace('\r', ' ').replace('\n', ' ')
+    raw = ' '.join(raw.split())
+    if not raw:
+        return ''
+
+    forbidden = set('<>:"/\\|?*')
+    safe = ''.join(ch for ch in raw if ord(ch) >= 32 and ch not in forbidden).strip().rstrip('.')
+    return safe[:140].rstrip(' .')
+
+
+def build_document_folder_name(tracking_number, subject=''):
+    tracking = normalize_string(tracking_number)
+    safe_subject = sanitize_subject_for_folder(subject)
+    if not safe_subject:
+        return tracking
+
+    max_subject_length = max(20, 150 - len(tracking) - 3)
+    if len(safe_subject) > max_subject_length:
+        safe_subject = safe_subject[:max_subject_length].rstrip(' .')
+
+    if not safe_subject:
+        return tracking
+
+    return f'{tracking}.[{safe_subject}]'
+
+
+def infer_extension_from_data_url(header):
+    lowered = str(header or '').lower()
+    if 'application/pdf' in lowered:
+        return '.pdf'
+    if 'image/png' in lowered:
+        return '.png'
+    if 'image/jpeg' in lowered or 'image/jpg' in lowered:
+        return '.jpg'
+    if 'image/webp' in lowered:
+        return '.webp'
+    if 'text/plain' in lowered:
+        return '.txt'
+    return ''
+
+
+def get_document_main_division(doc):
+    extra_data = parse_json_or_fallback(doc.extra_data, {})
+    candidates = [
+        doc.main_division,
+        extra_data.get('mainDivision') if isinstance(extra_data, dict) else '',
+        extra_data.get('oprDivision') if isinstance(extra_data, dict) else '',
+        doc.target_division,
+    ]
+
+    for candidate in candidates:
+        clean = normalize_string(candidate)
+        if clean:
+            return clean
+    return ''
+
+
+def can_user_access_document(doc, user):
+    role = normalize_string(user.role)
+    if role in {'Admin', 'Operator', 'PM', 'OPM Assistant'}:
+        return True
+
+    if role != 'Division':
+        return False
+
+    user_division = normalize_string(user.division)
+    if not user_division:
+        return False
+
+    user_division_lower = user_division.lower()
+    target_divisions = get_document_target_divisions(doc)
+    sender_division = normalize_string(doc.sender_address)
+
+    routed_to_user = any(normalize_string(division).lower() == user_division_lower for division in target_divisions)
+    sent_by_user_division = sender_division.lower() == user_division_lower
+    if not routed_to_user and not sent_by_user_division:
+        return False
+
+    assigned_position = get_document_assigned_position(doc, user_division)
+    if not assigned_position:
+        return True
+
+    user_position = normalize_string(user.position)
+    if not user_position:
+        return False
+
+    return user_position.lower() == assigned_position.lower()
+
+
 @documents_bp.route('', methods=['GET'])
 @jwt_required()
 def list_documents():
+    user = get_authenticated_user()
+    if not user:
+        return jsonify({'error': 'Invalid user identity in token'}), 401
+
     docs = Document.query.order_by(Document.created_at.desc()).all()
+    if normalize_string(user.role) == 'Division':
+        docs = [doc for doc in docs if can_user_access_document(doc, user)]
+
     return jsonify({'documents': [d.to_dict() for d in docs]})
 
 
 @documents_bp.route('/<int:doc_id>', methods=['GET'])
 @jwt_required()
 def get_document(doc_id):
+    user = get_authenticated_user()
+    if not user:
+        return jsonify({'error': 'Invalid user identity in token'}), 401
+
     doc = Document.query.get(doc_id)
     if not doc:
         return jsonify({'error': 'Document not found'}), 404
+
+    if not can_user_access_document(doc, user):
+        return jsonify({'error': 'Access denied for this document'}), 403
+
     return jsonify({'document': doc.to_dict()})
 
 
 @documents_bp.route('', methods=['POST'])
 @jwt_required()
 def create_document():
-    try:
-        user_id = int(get_jwt_identity())
-    except (TypeError, ValueError):
-        return jsonify({'error': 'Invalid user identity in token'}), 401
-
-    user = db.session.get(User, user_id)
+    user = get_authenticated_user()
     if not user:
         return jsonify({'error': 'Authenticated user no longer exists'}), 401
 
@@ -151,7 +328,7 @@ def create_document():
         routing_history=dumps_or_fallback(data.get('routingHistory'), []),
         division_receipts_json=dumps_or_fallback(data.get('divisionReceipts'), {}),
         extra_data=dumps_or_fallback(extra_data_dict, {}),
-        created_by=user_id,
+        created_by=user.id,
     )
 
     try:
@@ -176,15 +353,28 @@ def create_document():
         })
         return jsonify({'error': 'Database error while saving document.'}), 500
 
+    publish_event('documents-updated', {
+        'docId': doc.id,
+        'trackingNumber': doc.tracking_number,
+        'action': 'created',
+    })
+
     return jsonify({'document': doc.to_dict(), 'controlNumber': doc.tracking_number}), 201
 
 
 @documents_bp.route('/<int:doc_id>', methods=['PUT'])
 @jwt_required()
 def update_document(doc_id):
+    user = get_authenticated_user()
+    if not user:
+        return jsonify({'error': 'Invalid user identity in token'}), 401
+
     doc = Document.query.get(doc_id)
     if not doc:
         return jsonify({'error': 'Document not found'}), 404
+
+    if not can_user_access_document(doc, user):
+        return jsonify({'error': 'Access denied for this document'}), 403
 
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
@@ -228,7 +418,34 @@ def update_document(doc_id):
 
     for js_key, db_col in json_fields.items():
         if js_key in data:
-            setattr(doc, db_col, dumps_or_fallback(data[js_key], [] if js_key != 'divisionReceipts' else {}))
+            if js_key == 'instructionComments':
+                incoming = data.get(js_key)
+                incoming_list = incoming if isinstance(incoming, list) else []
+                existing_list = []
+                if doc.instruction_comments:
+                    try:
+                        parsed = json.loads(doc.instruction_comments)
+                        if isinstance(parsed, list):
+                            existing_list = parsed
+                    except Exception:
+                        existing_list = []
+
+                merged = []
+                seen = set()
+                for entry in [*existing_list, *incoming_list]:
+                    if not isinstance(entry, dict):
+                        continue
+                    key = entry.get('id')
+                    if not key:
+                        key = f"{entry.get('roleLabel')}-{entry.get('name')}-{entry.get('comment')}-{entry.get('createdAt')}"
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    merged.append(entry)
+
+                setattr(doc, db_col, dumps_or_fallback(merged, []))
+            else:
+                setattr(doc, db_col, dumps_or_fallback(data[js_key], [] if js_key != 'divisionReceipts' else {}))
 
     # Update extra_data
     known_keys = set(simple_fields.keys()) | set(json_fields.keys()) | {'id', 'createdBy', 'createdAt', 'updatedAt'}
@@ -259,13 +476,186 @@ def update_document(doc_id):
         })
         return jsonify({'error': 'Database error while updating document.'}), 500
 
+    publish_event('documents-updated', {
+        'docId': doc.id,
+        'trackingNumber': doc.tracking_number,
+        'action': 'updated',
+    })
+
     return jsonify({'document': doc.to_dict()})
+
+
+@documents_bp.route('/<int:doc_id>/completion-proof', methods=['POST'])
+@jwt_required()
+def save_completion_proof(doc_id):
+    import base64
+
+    user = get_authenticated_user()
+    if not user:
+        return jsonify({'error': 'Invalid user identity in token'}), 401
+
+    doc = Document.query.get(doc_id)
+    if not doc:
+        return jsonify({'error': 'Document not found'}), 404
+
+    if not can_user_access_document(doc, user):
+        return jsonify({'error': 'Access denied for this document'}), 403
+
+    user_division = normalize_string(user.division)
+    main_division = get_document_main_division(doc)
+    if not user_division or not main_division or user_division.lower() != main_division.lower():
+        return jsonify({'error': 'Only the main division can upload completion proof'}), 403
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Invalid JSON payload'}), 400
+
+    data_url = data.get('dataUrl')
+    original_name = normalize_string(data.get('name'))
+    if not data_url or ',' not in str(data_url):
+        return jsonify({'error': 'Missing or invalid completion proof payload'}), 400
+
+    header, encoded = str(data_url).split(',', 1)
+    if 'base64' not in header.lower():
+        return jsonify({'error': 'Completion proof must be base64 encoded'}), 400
+
+    try:
+        file_data = base64.b64decode(encoded)
+    except Exception:
+        return jsonify({'error': 'Failed to decode completion proof file'}), 400
+
+    if not file_data:
+        return jsonify({'error': 'Completion proof file is empty'}), 400
+
+    if len(file_data) > MAX_COMPLETION_PROOF_BYTES:
+        return jsonify({'error': 'Completion proof file is too large (max 25MB)'}), 400
+
+    storage_root, storage_folder = get_storage_root(data.get('storageFolder'))
+    tracking_number = normalize_string(doc.tracking_number)
+    if not tracking_number:
+        return jsonify({'error': 'Document tracking number is missing'}), 500
+
+    target_dir = os.path.join(storage_root, tracking_number)
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+    except Exception as exc:
+        return jsonify({'error': f'Failed to create completion-proof directory: {str(exc)}'}), 500
+
+    safe_original = sanitize_filename(original_name)
+    _base_name, extension = os.path.splitext(safe_original)
+    extension = extension.lower() if extension else infer_extension_from_data_url(header)
+    if not extension:
+        extension = '.bin'
+
+    timestamp = datetime.utcnow().strftime('%Y%m%d-%H%M%S')
+    unique_suffix = uuid.uuid4().hex[:8]
+    saved_name = f'completion-proof-{timestamp}-{unique_suffix}{extension}'
+    file_path = os.path.join(target_dir, saved_name)
+
+    try:
+        with open(file_path, 'wb') as handle:
+            handle.write(file_data)
+    except Exception as exc:
+        return jsonify({'error': f'Failed to save completion proof: {str(exc)}'}), 500
+
+    publish_event('documents-updated', {
+        'docId': doc.id,
+        'trackingNumber': tracking_number,
+        'action': 'completion-proof-uploaded',
+    })
+
+    return jsonify({
+        'message': 'Completion proof saved successfully',
+        'fileName': saved_name,
+        'originalName': safe_original or original_name,
+        'fileSize': len(file_data),
+        'trackingNumber': tracking_number,
+        'storageFolder': storage_folder,
+    }), 200
+
+
+@documents_bp.route('/<string:tracking_number>/files/upload-original', methods=['POST'])
+@jwt_required()
+def upload_original_document_file(tracking_number):
+    user = get_authenticated_user()
+    if not user:
+        return jsonify({'error': 'Invalid user identity in token'}), 401
+
+    if normalize_string(user.role) not in {'Operator', 'Admin'}:
+        return jsonify({'error': 'Only Operator/Admin can save scanned files'}), 403
+
+    # Reject obviously oversized payloads before writing to disk.
+    content_length = request.content_length or 0
+    if content_length > (MAX_SCAN_UPLOAD_BYTES + (2 * 1024 * 1024)):
+        return jsonify({
+            'error': f'Uploaded file is too large. Max allowed is {MAX_SCAN_UPLOAD_BYTES // (1024 * 1024)} MB.'
+        }), 413
+
+    upload = request.files.get('file')
+    if upload is None:
+        return jsonify({'error': 'No file part found in request'}), 400
+
+    safe_original = sanitize_filename(upload.filename)
+    if not safe_original:
+        safe_original = 'scanned_document.pdf'
+
+    ext = os.path.splitext(safe_original)[1].lower()
+    if not ext:
+        ext = infer_extension_from_data_url(upload.mimetype)
+
+    allowed_ext = {'.pdf', '.png', '.jpg', '.jpeg', '.tif', '.tiff', '.webp', '.bmp'}
+    if ext not in allowed_ext:
+        return jsonify({'error': f'Unsupported file type for original upload: {ext or "unknown"}'}), 400
+
+    storage_root, storage_folder = get_storage_root(request.form.get('storageFolder'))
+    target_dir = os.path.join(storage_root, tracking_number)
+
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+    except Exception as exc:
+        return jsonify({'error': f'Failed to create directory {target_dir}: {str(exc)}'}), 500
+
+    target_name = f'scanned_document{ext}'
+    file_path = os.path.join(target_dir, target_name)
+
+    try:
+        upload.save(file_path)
+        actual_size = os.path.getsize(file_path)
+        if actual_size > MAX_SCAN_UPLOAD_BYTES:
+            os.remove(file_path)
+            return jsonify({
+                'error': f'Uploaded file is too large. Max allowed is {MAX_SCAN_UPLOAD_BYTES // (1024 * 1024)} MB.'
+            }), 413
+    except Exception as exc:
+        if os.path.isfile(file_path):
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
+        return jsonify({'error': f'Failed to save uploaded original: {str(exc)}'}), 500
+
+    return jsonify({
+        'message': 'Original scanned file saved successfully',
+        'directory': target_dir,
+        'storageRoot': storage_root,
+        'storageFolder': storage_folder,
+        'fileName': target_name,
+        'originalName': safe_original,
+        'fileSize': os.path.getsize(file_path),
+    }), 200
 
 
 @documents_bp.route('/<string:tracking_number>/files', methods=['POST'])
 @jwt_required()
 def save_document_files(tracking_number):
     import base64
+
+    user = get_authenticated_user()
+    if not user:
+        return jsonify({'error': 'Invalid user identity in token'}), 401
+
+    if normalize_string(user.role) not in {'Operator', 'Admin'}:
+        return jsonify({'error': 'Only Operator/Admin can save scanned files'}), 403
 
     data = request.get_json()
     if not data or 'attachments' not in data:
@@ -274,9 +664,10 @@ def save_document_files(tracking_number):
     attachments = data['attachments']
 
     storage_root, storage_folder = get_storage_root(data.get('storageFolder'))
+    target_folder_name = build_document_folder_name(tracking_number, data.get('subject'))
 
     # Create dedicated folder per control/reference number.
-    target_dir = os.path.join(storage_root, tracking_number)
+    target_dir = os.path.join(storage_root, target_folder_name)
     
     try:
         os.makedirs(target_dir, exist_ok=True)
@@ -324,6 +715,7 @@ def save_document_files(tracking_number):
     return jsonify({
         'message': 'Files saved successfully',
         'directory': target_dir,
+        'documentFolder': target_folder_name,
         'storageRoot': storage_root,
         'storageFolder': storage_folder,
         'savedConfigs': saved_files
@@ -334,6 +726,17 @@ def save_document_files(tracking_number):
 @jwt_required()
 def get_document_file(tracking_number, filename):
     from flask import send_from_directory
+
+    user = get_authenticated_user()
+    if not user:
+        return jsonify({'error': 'Invalid user identity in token'}), 401
+
+    doc = Document.query.filter_by(tracking_number=tracking_number).first()
+    if doc and not can_user_access_document(doc, user):
+        return jsonify({'error': 'Access denied for this document file'}), 403
+
+    if not doc and normalize_string(user.role) == 'Division':
+        return jsonify({'error': 'Access denied for this document file'}), 403
 
     storage_root, _storage_folder = get_storage_root(request.args.get('storageFolder'))
     target_dir = os.path.join(storage_root, tracking_number)
