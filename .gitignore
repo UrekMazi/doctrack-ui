@@ -1,6 +1,8 @@
 node_modules/
 .venv/
+.venv-1/
 dist/
+.cert/
 
 # Python cache artifacts
 __pycache__/

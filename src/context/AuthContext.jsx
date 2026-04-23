@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect } from 'react'
+import { markFlow } from '../utils/perfTrace'
 
 const AuthContext = createContext(null)
 
@@ -21,16 +22,48 @@ export function AuthProvider({ children }) {
   }, [token])
 
   const login = async (username, password) => {
-    const res = await fetch(`${API_BASE}/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
-    })
-    const data = await res.json()
-    if (!res.ok) throw new Error(data.error || 'Login failed')
+    let res
+    markFlow('auth:request:start', { username })
+    try {
+      res = await fetch(`${API_BASE}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      })
+    } catch {
+      markFlow('auth:request:network-error')
+      throw new Error('Cannot reach backend server. Check if backend is running on port 3001.')
+    }
+
+    markFlow('auth:response:received', { status: res.status })
+
+    const responseText = await res.text()
+    let data = null
+    try {
+      data = responseText ? JSON.parse(responseText) : {}
+    } catch {
+      data = null
+    }
+
+    markFlow('auth:response:parsed', { hasBody: !!responseText })
+
+    if (!res.ok) {
+      const fallbackMessage = `Login failed (HTTP ${res.status})`
+      const message = data?.error || fallbackMessage
+      markFlow('auth:response:error', { status: res.status, message })
+      throw new Error(message)
+    }
+
+    if (!data?.token || !data?.user) {
+      markFlow('auth:response:invalid-shape')
+      throw new Error('Invalid response from backend during login.')
+    }
+
+    markFlow('auth:state:update:start', { role: data.user?.role })
     localStorage.setItem('doctrack_token', data.token)
     setToken(data.token)
     setUser(data.user)
+    markFlow('auth:state:update:done')
     return data.user
   }
 

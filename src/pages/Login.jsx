@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
+import { beginFlow, markFlow, endFlow } from '../utils/perfTrace'
 
 export default function Login() {
   const { login } = useAuth()
@@ -28,9 +29,14 @@ export default function Login() {
     e.preventDefault()
     setError('')
     setLoading(true)
+    beginFlow('login-boot', { username })
+    markFlow('login:submit')
     try {
       await login(username, password)
+      markFlow('login:resolved')
     } catch (err) {
+      markFlow('login:error', { message: err?.message || 'unknown' })
+      endFlow('failed', { message: err?.message || 'unknown' })
       setError(err.message)
     } finally {
       setLoading(false)

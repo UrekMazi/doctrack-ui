@@ -9,14 +9,14 @@ from models import db, User
 INITIAL_USERS = [
     {'username': 'admin', 'full_name': 'System Administrator', 'role': 'Admin', 'division': None, 'position': 'System Admin'},
     {'username': 'pm', 'full_name': 'Mr. Rey T. Del Moro', 'role': 'PM', 'division': 'Office of the Port Manager (OPM)', 'position': 'Port Manager'},
-    {'username': 'asst', 'full_name': 'Ms. Shirley', 'role': 'OPM Assistant', 'division': 'Office of the Port Manager (OPM)', 'position': 'OPM Executive Assistant'},
-    {'username': 'ppd', 'full_name': 'Mr. Emman', 'role': 'Division', 'division': 'Port Police Division (PPD)', 'position': 'Division Head'},
-    {'username': 'psd', 'full_name': 'Mrs. Arlyn Caraig', 'role': 'Division', 'division': 'Port Services Division (PSD)', 'position': 'Division Head'},
-    {'username': 'adm', 'full_name': 'Mr. King Jhon Philip T. Cagas', 'role': 'Division', 'division': 'Administrative Division', 'position': 'Admin Staff'},
-    {'username': 'fin', 'full_name': 'Ms. Jazel', 'role': 'Division', 'division': 'Finance Division', 'position': 'Finance Staff'},
-    {'username': 'esd', 'full_name': 'Mrs. Richel Arceo', 'role': 'Division', 'division': 'Engineering Services Division (ESD)', 'position': 'Division Head'},
-    {'username': 'terminal', 'full_name': 'Mr. Jebs', 'role': 'Division', 'division': 'Terminal', 'position': 'Terminal Head'},
-    {'username': 'records', 'full_name': 'Ms. Irish', 'role': 'Operator', 'division': 'Records Section', 'position': 'Records Encoder'},
+    {'username': 'asst', 'full_name': 'Ms. Shirley', 'role': 'OPM Assistant', 'division': 'Office of the Port Manager (OPM)', 'position': 'Executive Assistant A'},
+    {'username': 'ppd', 'full_name': 'Mr. Emman', 'role': 'Division', 'division': 'Port Police Division (PPD)', 'position': 'Division Manager A'},
+    {'username': 'psd', 'full_name': 'Mrs. Arlyn Caraig', 'role': 'Division', 'division': 'Port Services Division (PSD)', 'position': 'Division Manager A'},
+    {'username': 'adm', 'full_name': 'Mr. King John Philips T. Cagas', 'role': 'Division', 'division': 'Administrative Division', 'position': 'Division Manager A'},
+    {'username': 'fin', 'full_name': 'Ms. Jazel', 'role': 'Division', 'division': 'Finance Division', 'position': 'Division Manager A'},
+    {'username': 'esd', 'full_name': 'Mrs. Richel Arceo', 'role': 'Division', 'division': 'Engineering Services Division (ESD)', 'position': 'Division Manager A'},
+    {'username': 'terminal', 'full_name': 'Mr. Jebs', 'role': 'Division', 'division': 'Terminal', 'position': 'Terminal Staff'},
+    {'username': 'records', 'full_name': 'Ms. Irish', 'role': 'Operator', 'division': 'Administrative Division', 'position': 'Records Officer A'},
 ]
 
 DEFAULT_PASSWORD = 'doctrack2026'

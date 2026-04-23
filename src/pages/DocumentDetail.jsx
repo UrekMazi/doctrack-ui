@@ -9,9 +9,18 @@ import toast from 'react-hot-toast'
 import StatusBadge from '../components/StatusBadge'
 import IncomingTransmittalSlip from '../components/IncomingTransmittalSlip'
 import { DIVISIONS, OUTGOING_DOCUMENTS } from '../data/mockData'
+import { useAuth } from '../context/AuthContext'
 import { useDocuments } from '../context/DocumentContext'
 import { inferDocumentDirection } from '../utils/documentDirection'
 import { openIncomingTransmittalPrintWindow } from '../utils/incomingTransmittalPrint'
+import { WORKFLOW_STATUS, getStatusDisplayLabel } from '../utils/workflowLabels'
+import {
+  OPM_DIVISION,
+  getDivisionPositionOptionsFromCatalog,
+  buildPmRouteAssignments,
+  buildRouteAssignments,
+  getAssignedPosition,
+} from '../utils/divisionPositionAssignments'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -33,13 +42,50 @@ const DIVISION_CODE_MAP = {
 
 const VALID_DIVISION_CODES = ['ADM', 'PSD', 'FIN', 'PPD', 'ESD', 'OTHER']
 
-const DIVISION_PERSONNEL = {
-  ADM: ['Ms. Clara Davis (HR Officer)', 'Mr. Neil Wilson (Records Supervisor)', 'Ms. Joy Santos (Admin Analyst)'],
-  PSD: ['Engr. Ramon Smith (Port Operations)', 'Mr. Leo Johnson (Harbor Master)', 'Ms. Ana Cruz (Marine Services)'],
-  FIN: ['Ms. Carla Mendoza (Budget Officer)', 'Mr. Paolo Reyes (Accounting Officer)', 'Ms. Gwen Lim (Cash Unit)'],
-  PPD: ['Mr. Eric Tan (Port Police Chief)', 'Ms. Mae Flores (Security Coordinator)', 'Mr. Kent Ramos (Safety Officer)'],
-  ESD: ['Engr. Daryl Navarro (Chief Engineer)', 'Engr. Nina Ortega (Maintenance Engineer)', 'Mr. Sean Bautista (Project Inspector)'],
-  OTHER: ['Division Staff 1', 'Division Staff 2'],
+const TRANSMITTAL_ACTION_OPTIONS = [
+  'As appropriate',
+  'Prepare Reply',
+  'Give comments/recommendations',
+  'For information/reference/file',
+  'Disseminate',
+  'For evaluation/review',
+  'For monitoring',
+  'For coordination',
+]
+
+const LEGACY_TRANSMITTAL_ACTION_MAP = {
+  'For review and appropriate action': 'As appropriate',
+  'For information': 'For information/reference/file',
+  'For approval / signature': 'For evaluation/review',
+  'For compliance': 'For monitoring',
+  'For comment / recommendation': 'Give comments/recommendations',
+}
+
+function normalizeTransmittalAction(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return TRANSMITTAL_ACTION_OPTIONS[0]
+  const normalized = LEGACY_TRANSMITTAL_ACTION_MAP[raw] || raw
+  return TRANSMITTAL_ACTION_OPTIONS.includes(normalized) ? normalized : TRANSMITTAL_ACTION_OPTIONS[0]
+}
+
+const readFileAsDataUrl = (file) => new Promise((resolve, reject) => {
+  const reader = new FileReader()
+  reader.onload = (event) => resolve(event.target?.result)
+  reader.onerror = () => reject(new Error('Failed to read completion proof file.'))
+  reader.readAsDataURL(file)
+})
+
+function buildCompletionProofUrl(trackingNumber, fileName, storageFolder = '') {
+  const tracking = String(trackingNumber || '').trim()
+  const name = String(fileName || '').trim()
+  if (!tracking || !name) return ''
+
+  const encodedTracking = encodeURIComponent(tracking)
+  const encodedName = encodeURIComponent(name)
+  const encodedStorageFolder = String(storageFolder || '').trim()
+    ? `?storageFolder=${encodeURIComponent(String(storageFolder || '').trim())}`
+    : ''
+  return `/api/documents/${encodedTracking}/files/${encodedName}${encodedStorageFolder}`
 }
 
 function mapDivisionToCode(value) {
@@ -115,7 +161,7 @@ function getDivisionReceipts(doc) {
 function getRoleLabel(currentUser) {
   const role = currentUser?.systemRole || ''
   if (role === 'Operator') return 'RECORDS'
-  if (role === 'OPM Assistant') return 'Assistant OPM'
+  if (role === 'OPM Assistant') return 'OPM'
   if (role === 'PM') return 'PM'
   if (role === 'Division') return currentUser?.division || 'Division'
   return role || 'User'
@@ -131,8 +177,21 @@ function isPmInstructionComment(entry) {
   return /(^|[^A-Z])PM([^A-Z]|$)/.test(authorName) || authorName.includes('PORT MANAGER')
 }
 
+function isRecordsEndorseRemark(entry) {
+  const marker = String(entry?.remarkType || entry?.commentType || '').trim().toLowerCase()
+  if (marker === 'records-endorse-to-opm' || marker === 'records-endorsement') return true
+  return String(entry?.comment || '').startsWith('[Records endorsement remark] ')
+}
+
+function isOpmEndorseRemark(entry) {
+  const marker = String(entry?.remarkType || entry?.commentType || '').trim().toLowerCase()
+  if (marker === 'opm-endorse-to-pm' || marker === 'opm-endorsement') return true
+  return String(entry?.comment || '').startsWith('[OPM endorsement remark] ')
+}
+
 export default function DocumentDetail({ currentUser }) {
   const { id } = useParams()
+  const { token, authFetch } = useAuth()
   const { documents, updateDocumentStatus, refreshDocuments } = useDocuments()
   // useParams always returns strings; backend IDs are numbers — use loose equality
   const doc = documents.find(d => String(d.id) === String(id) || d.trackingNumber === id) ||
@@ -167,7 +226,7 @@ export default function DocumentDetail({ currentUser }) {
   
   // OPM Assistant UI States
   const isOpmAssistant = currentUser?.systemRole === 'OPM Assistant'
-  const isForOpmReview = doc?.status === 'For OPM Assistant Review'
+  const isForOpmReview = doc?.status === WORKFLOW_STATUS.OPM_INITIAL_REVIEW
   const [digitalAcknowledgeTyped, setDigitalAcknowledgeTyped] = useState('')
   const [isQrScannedOpm, setIsQrScannedOpm] = useState(false)
   const [showAssistantEndorseModal, setShowAssistantEndorseModal] = useState(false)
@@ -180,8 +239,11 @@ export default function DocumentDetail({ currentUser }) {
   const [showPMRoutingModal, setShowPMRoutingModal] = useState(false)
   const [mainRouteDivision, setMainRouteDivision] = useState('')
   const [routeToDivisions, setRouteToDivisions] = useState([])
-  const [routeAction, setRouteAction] = useState('For review and appropriate action')
+  const [routeAction, setRouteAction] = useState(TRANSMITTAL_ACTION_OPTIONS[0])
   const [routeInstructions, setRouteInstructions] = useState('')
+  const [routeAssignmentDraft, setRouteAssignmentDraft] = useState({})
+  const [divisionPositionCatalog, setDivisionPositionCatalog] = useState({})
+  const [opmAssignee, setOpmAssignee] = useState('')
   const [routingToDivision, setRoutingToDivision] = useState(false)
   const [showDelegateModal, setShowDelegateModal] = useState(false)
   const [selectedPersonnel, setSelectedPersonnel] = useState('')
@@ -193,8 +255,9 @@ export default function DocumentDetail({ currentUser }) {
   const [completingTask, setCompletingTask] = useState(false)
   const qrScannerRef = useRef(null)
   const qrScannerElementId = 'doc-detail-qr-reader'
-  const selectedDivisionCodes = getSelectedDivisionCodes(doc)
-  const mainDivisionCode = getMainDivisionCode(doc, selectedDivisionCodes)
+  const shouldShowRoutingMarks = doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED || doc.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED
+  const selectedDivisionCodes = shouldShowRoutingMarks ? getSelectedDivisionCodes(doc) : []
+  const mainDivisionCode = shouldShowRoutingMarks ? getMainDivisionCode(doc, selectedDivisionCodes) : ''
   const routedDivisions = getRoutedDivisions(doc)
   const divisionReceipts = getDivisionReceipts(doc)
   const mainDivision = doc.oprDivision || doc.mainDivision || doc.targetDivision || ''
@@ -208,6 +271,8 @@ export default function DocumentDetail({ currentUser }) {
   const normalizeDivisionValue = (value) => String(value || '').trim().toLowerCase()
   const userRole = String(currentUser?.systemRole || '').trim()
   const userDivision = String(currentUser?.division || '').trim()
+  const userPosition = String(currentUser?.position || '').trim()
+  const normalizedUserPosition = userPosition.toLowerCase()
   const normalizedUserDivision = normalizeDivisionValue(userDivision)
   const normalizedMainDivision = normalizeDivisionValue(mainDivision)
   const explicitSupportingDivisions = Array.isArray(doc.supportingDivisions)
@@ -219,10 +284,14 @@ export default function DocumentDetail({ currentUser }) {
         return normalizedDivision.length > 0 && normalizedDivision !== normalizedMainDivision
       })
     : []
-  const supportingDivisionList = (explicitSupportingDivisions.length > 0
+  const supportingDivisionDisplayList = (explicitSupportingDivisions.length > 0
     ? explicitSupportingDivisions
     : fallbackSupportingDivisions
-  ).map((division) => normalizeDivisionValue(division))
+  )
+    .map((division) => String(division || '').trim())
+    .filter((division) => division.length > 0 && normalizeDivisionValue(division) !== normalizedMainDivision)
+    .filter((division, idx, arr) => arr.indexOf(division) === idx)
+  const supportingDivisionList = supportingDivisionDisplayList.map((division) => normalizeDivisionValue(division))
   const isCoreRoutingRole =
     userRole === 'PM' ||
     userRole === 'Operator' ||
@@ -235,14 +304,43 @@ export default function DocumentDetail({ currentUser }) {
     .map((division) => mapDivisionToCode(division))
     .filter(Boolean)
   const isUserInRoutedDivisionByCode = userDivisionCode ? routedDivisionCodes.includes(userDivisionCode) : false
-  const isDelegationRoutedStatus = doc.status === 'Routed to Division' || doc.status === 'Received & Acknowledged'
-  const isCompletionRoutedStatus = doc.status === 'Routed to Division' || doc.status === 'Received & Acknowledged'
-  const divisionPersonnelOptions = userDivisionCode ? (DIVISION_PERSONNEL[userDivisionCode] || []) : []
+  const isDelegationRoutedStatus = doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED || doc.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED
+  const isCompletionRoutedStatus = doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED || doc.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED
+  const divisionDelegateOptions = getDivisionPositionOptionsFromCatalog(userDivision, divisionPositionCatalog)
+    .filter((position) => String(position || '').trim().toLowerCase() !== normalizedUserPosition)
+  const existingAssignedPersonnel = String(doc.assignedTo || '').trim()
+  const divisionPersonnelOptions = existingAssignedPersonnel && !divisionDelegateOptions.includes(existingAssignedPersonnel)
+    ? [existingAssignedPersonnel, ...divisionDelegateOptions]
+    : divisionDelegateOptions
+  const isDivisionHead =
+    normalizedUserPosition === 'division manager a' ||
+    normalizedUserPosition === 'terminal staff' ||
+    normalizedUserPosition === 'terminal head'
   const canDelegateTask =
     currentUser?.systemRole === 'Division' &&
+    isDivisionHead &&
     isDelegationRoutedStatus &&
     (isUserMainDivision || isUserSupportingDivision || isUserInRoutedDivisionByCode)
   const canCompleteTask = isCompletionRoutedStatus && isUserMainDivision
+  const completionAttachmentLabel = String(doc.completionAttachment || '').trim()
+  const completionAttachmentFileName = String(doc.completionAttachmentFileName || '').trim()
+  const completionAttachmentStorageFolder = String(doc.completionAttachmentStorageFolder || '').trim()
+  const completionAttachmentUrl = String(doc.completionAttachmentUrl || '').trim()
+  const resolvedCompletionAttachmentUrl = completionAttachmentUrl || buildCompletionProofUrl(
+    doc.trackingNumber,
+    completionAttachmentFileName,
+    completionAttachmentStorageFolder
+  )
+  const completionDetailsText = String(doc.actionTaken || '').trim()
+  const completedByText = String(doc.completedBy || '').trim()
+  const completedAtText = String(doc.completedAt || '').trim()
+  const hasCompletionSummary = Boolean(
+    completionDetailsText ||
+    completedByText ||
+    completedAtText ||
+    completionAttachmentLabel ||
+    completionAttachmentFileName
+  )
   const canPrintTransmittalSlip = isCoreRoutingRole || isUserMainDivision
   const shouldHidePrintForSupportingDivision = isUserSupportingDivision && !isCoreRoutingRole && !isUserMainDivision
   const targetDivisionRaw = Array.isArray(doc.targetDivisions) && doc.targetDivisions.length > 0
@@ -272,14 +370,24 @@ export default function DocumentDetail({ currentUser }) {
     <>
       {recordsRegistrationRemarks && <div style={{ marginBottom: 4 }}>{recordsRegistrationRemarks}</div>}
       {nonPmInstructionComments.map((entry, idx) => {
-        const isAssistant = entry.roleLabel === 'OPM Assistant' || entry.roleLabel === 'Assistant OPM' || entry.role === 'OPM Assistant'
+        const isOpmEndorse = isOpmEndorseRemark(entry)
+        const isRecordsEndorse = isRecordsEndorseRemark(entry)
         let cleanComment = entry.comment || ''
         if (cleanComment.startsWith('[OPM Assistant remarks] ')) {
           cleanComment = cleanComment.replace('[OPM Assistant remarks] ', '')
         }
+        if (cleanComment.startsWith('[OPM remarks] ')) {
+          cleanComment = cleanComment.replace('[OPM remarks] ', '')
+        }
+        if (cleanComment.startsWith('[OPM endorsement remark] ')) {
+          cleanComment = cleanComment.replace('[OPM endorsement remark] ', '')
+        }
+        if (cleanComment.startsWith('[Records endorsement remark] ')) {
+          cleanComment = cleanComment.replace('[Records endorsement remark] ', '')
+        }
         return (
           <div key={entry.id || `${entry.createdAt || ''}-${idx}`} style={{ marginBottom: 2 }}>
-            <strong>{isAssistant ? 'OPM Assistant Remark:' : `${String(entry.roleLabel || entry.role || 'User')}${entry.name ? ` (${entry.name})` : ''}:`}</strong> {cleanComment}
+            <strong>{isOpmEndorse ? 'Remarks by OPM to PM:' : isRecordsEndorse ? 'Remarks by Records Division:' : `${String(entry.roleLabel || entry.role || 'User')}${entry.name ? ` (${entry.name})` : ''}:`}</strong> {cleanComment}
           </div>
         )
       })}
@@ -300,23 +408,120 @@ export default function DocumentDetail({ currentUser }) {
   }
   const roleLabel = getRoleLabel(currentUser)
   const commenterName = currentUser?.name || 'Unknown User'
-  const isDivisionQrReceivable = isIncoming && currentUser?.systemRole === 'Division' && doc.status === 'Routed to Division'
-  const statusNotification = doc.status === 'Registered'
+  const canOperatorEndorseToOpm = isIncoming && currentUser?.systemRole === 'Operator' && doc.status === WORKFLOW_STATUS.REGISTERED
+  const operatorAlreadyEndorsed = isIncoming && currentUser?.systemRole === 'Operator' && doc.status !== WORKFLOW_STATUS.REGISTERED
+  const latestOperatorOpmEndorseStep = [...history]
+    .reverse()
+    .find((step) => /endorsed to opm/i.test(String(step?.action || '')))
+  const operatorEndorseTimestamp = latestOperatorOpmEndorseStep
+    ? `${String(latestOperatorOpmEndorseStep.date || '').trim()} ${String(latestOperatorOpmEndorseStep.time || '').trim()}`.trim()
+    : ''
+  const operatorEndorseBy = String(latestOperatorOpmEndorseStep?.user || '').trim()
+  const operatorNextAction = (isIncoming && currentUser?.systemRole === 'Operator')
+    ? (
+        canOperatorEndorseToOpm
+          ? {
+              tone: 'warning',
+              title: 'Next Action: Endorse to OPM',
+              text: 'Review details, then send this document to OPM for initial review.',
+            }
+          : doc.status === WORKFLOW_STATUS.OPM_INITIAL_REVIEW
+            ? {
+                tone: 'info',
+                title: 'Next Action: Monitor OPM Review',
+                text: 'Document is currently with OPM. Track updates while waiting for PM forwarding.',
+              }
+            : doc.status === WORKFLOW_STATUS.PM_REVIEW
+              ? {
+                  tone: 'info',
+                  title: 'Next Action: Waiting for PM Routing',
+                  text: 'OPM has forwarded this to PM. Await routing to RC/s Concerned.',
+                }
+              : doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED
+                ? {
+                    tone: 'success',
+                    title: 'Next Action: Monitor Division Receipt',
+                    text: 'Handoff to division/s is complete. Wait for digital or QR acknowledgement.',
+                  }
+                : doc.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED
+                  ? {
+                      tone: 'success',
+                      title: 'Next Action: Completed',
+                      text: 'Division acknowledgement is complete. No further operator action is needed.',
+                    }
+                  : null
+      )
+    : null
+  const isDivisionQrReceivable = isIncoming && currentUser?.systemRole === 'Division' && doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED
+  const statusNotification = doc.status === WORKFLOW_STATUS.REGISTERED
     ? {
         tone: 'secondary',
         title: 'Registered Only',
         text: 'Document is registered. No division QR receive is required yet.',
       }
-    : (doc.status === 'For OPM Assistant Review' || doc.status === 'Endorsed to OPM')
+    : (doc.status === WORKFLOW_STATUS.OPM_INITIAL_REVIEW || doc.status === WORKFLOW_STATUS.PM_REVIEW)
       ? {
           tone: 'info',
-          title: 'Endorsed to OPM (Digital)',
-          text: 'Document is currently in OPM flow. Division QR receive starts after PM routes to divisions.',
+          title: 'OPM/PM Review (Digital)',
+          text: 'Document is currently in OPM to PM review flow. Division QR receive starts after PM routes to RC/s Concerned.',
         }
       : null
   const routeDivisionOptions = DIVISIONS.filter((division) =>
-    division !== 'Records Section' && division !== 'Office of the Port Manager (OPM)'
+    division !== 'Records Section'
   )
+  const selectedRouteDivisions = [
+    mainRouteDivision,
+    ...routeToDivisions.filter((division) => division !== mainRouteDivision),
+  ].filter(Boolean)
+  const hasOpmSelection = selectedRouteDivisions.includes(OPM_DIVISION)
+  const persistedRouteAssignments = doc.routeAssignments && typeof doc.routeAssignments === 'object'
+    ? doc.routeAssignments
+    : {}
+  const routedAssignmentDivisionList = [
+    doc.oprDivision || doc.mainDivision || doc.targetDivision || '',
+    ...supportingDivisionDisplayList,
+  ]
+    .map((division) => String(division || '').trim())
+    .filter(Boolean)
+    .filter((division, idx, arr) => arr.indexOf(division) === idx)
+  const routingAssignmentSummary = routedAssignmentDivisionList
+    .map((division) => {
+      const assignedPosition = getAssignedPosition(persistedRouteAssignments, division) || (division === OPM_DIVISION ? String(doc.opmAssignee || '').trim() : '')
+      if (!assignedPosition) return ''
+      return `${division}: ${assignedPosition}`
+    })
+    .filter(Boolean)
+
+  useEffect(() => {
+    if (!token || (!showPMRoutingModal && !showDelegateModal)) return
+
+    let isCancelled = false
+
+    const loadDivisionPositionCatalog = async () => {
+      try {
+        const res = await fetch('/api/users/division-positions?includeAll=true', {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (!res.ok) return
+
+        const data = await res.json().catch(() => ({}))
+        const payload = data?.divisionPositions
+        if (!payload || typeof payload !== 'object') return
+        if (!isCancelled) {
+          setDivisionPositionCatalog(payload)
+        }
+      } catch {
+        // Keep static fallback options if catalog fetch fails.
+      }
+    }
+
+    loadDivisionPositionCatalog()
+
+    return () => {
+      isCancelled = true
+    }
+  }, [showDelegateModal, showPMRoutingModal, token])
+
   const allAttachments = doc.attachments || []
   const attachmentPriority = {
     original: 0,
@@ -551,19 +756,56 @@ export default function DocumentDetail({ currentUser }) {
   const openPMRoutingModal = () => {
     const selected = Array.isArray(doc.targetDivisions)
       ? doc.targetDivisions.filter(Boolean)
-      : (doc.targetDivision && doc.targetDivision !== 'Office of the Port Manager (OPM)' ? [doc.targetDivision] : [])
+      : (doc.targetDivision ? [doc.targetDivision] : [])
 
     const docMain = doc.mainDivision || doc.oprDivision || selected[0] || ''
+    const selectedDraftDivisions = [
+      docMain,
+      ...selected.filter((division) => division && division !== docMain),
+    ].filter(Boolean)
+    const initialDraftAssignments = buildRouteAssignments({
+      divisions: selectedDraftDivisions,
+      routeAssignments: doc.routeAssignments,
+      opmAssignee: doc.opmAssignee || '',
+    })
+    const resolvedOpmAssignee = getAssignedPosition(initialDraftAssignments, OPM_DIVISION) || String(doc.opmAssignee || '').trim()
+
     setMainRouteDivision(docMain)
     setRouteToDivisions(selected.filter((division) => division && division !== docMain))
-    setRouteAction(doc.action || 'For review and appropriate action')
+    setRouteAction(normalizeTransmittalAction(doc.action))
     setRouteInstructions(doc.pmTransmittalInstructions || '')
+    setRouteAssignmentDraft(initialDraftAssignments)
+    setOpmAssignee(resolvedOpmAssignee)
     setShowPMRoutingModal(true)
   }
 
   const closePMRoutingModal = () => {
     if (routingToDivision) return
     setShowPMRoutingModal(false)
+    setRouteAssignmentDraft({})
+    setOpmAssignee('')
+  }
+
+  const getDivisionAssignmentValue = (division) => {
+    const assignedPosition = getAssignedPosition(routeAssignmentDraft, division)
+    if (assignedPosition) return assignedPosition
+    if (division === OPM_DIVISION) return String(opmAssignee || '').trim()
+    return ''
+  }
+
+  const setDivisionAssignment = (division, position) => {
+    const cleanDivision = String(division || '').trim()
+    if (!cleanDivision) return
+
+    const nextPosition = String(position || '')
+    setRouteAssignmentDraft((prev) => ({
+      ...prev,
+      [cleanDivision]: { position: nextPosition },
+    }))
+
+    if (cleanDivision === OPM_DIVISION) {
+      setOpmAssignee(nextPosition)
+    }
   }
 
   const openDelegateModal = () => {
@@ -599,6 +841,13 @@ export default function DocumentDetail({ currentUser }) {
 
     const now = new Date()
     const nowIso = now.toISOString()
+    const delegatedDivision = String(currentUser?.division || '').trim()
+    const nextRouteAssignments = delegatedDivision
+      ? {
+          ...persistedRouteAssignments,
+          [delegatedDivision]: { position: assignedPersonnel },
+        }
+      : persistedRouteAssignments
     const delegationCommentText = '[Assigned to: ' + assignedPersonnel + '] ' + localizedInstruction
     const nextInstructionComments = [
       ...(Array.isArray(doc.instructionComments) ? doc.instructionComments : []),
@@ -619,6 +868,7 @@ export default function DocumentDetail({ currentUser }) {
       assignedBy: currentUser?.name || 'Division Manager',
       assignedDivision: currentUser?.division || '',
       assignedAt: nowIso,
+      routeAssignments: nextRouteAssignments,
       instructionComments: nextInstructionComments,
       routingHistory: [
         ...(doc.routingHistory || []),
@@ -677,7 +927,44 @@ export default function DocumentDetail({ currentUser }) {
 
     const now = new Date()
     const nowIso = now.toISOString()
-    const completionAttachmentName = completionFile?.name ? String(completionFile.name) : ''
+    let completionAttachmentName = ''
+    let completionAttachmentFileName = ''
+    let completionAttachmentUrl = ''
+    let completionAttachmentStorageFolder = ''
+
+    if (completionFile) {
+      try {
+        const dataUrl = await readFileAsDataUrl(completionFile)
+        const uploadResponse = await authFetch(`/api/documents/${doc.id}/completion-proof`, {
+          method: 'POST',
+          body: JSON.stringify({
+            name: completionFile.name,
+            type: completionFile.type || 'application/octet-stream',
+            size: completionFile.size || 0,
+            dataUrl,
+          }),
+        })
+        const uploadData = await uploadResponse.json().catch(() => ({}))
+
+        if (!uploadResponse.ok) {
+          throw new Error(uploadData.error || 'Failed to upload completion proof.')
+        }
+
+        completionAttachmentName = String(uploadData.originalName || completionFile.name || '').trim()
+        completionAttachmentFileName = String(uploadData.fileName || '').trim()
+        completionAttachmentStorageFolder = String(uploadData.storageFolder || '').trim()
+        completionAttachmentUrl = buildCompletionProofUrl(
+          doc.trackingNumber,
+          completionAttachmentFileName,
+          completionAttachmentStorageFolder
+        )
+      } catch (err) {
+        toast.error(err?.message || 'Failed to upload completion proof.')
+        setCompletingTask(false)
+        return
+      }
+    }
+
     const completionHistoryAction =
       'Task completed. Action taken: ' + completionDetails +
       (completionAttachmentName ? '; Proof: ' + completionAttachmentName : '')
@@ -685,6 +972,9 @@ export default function DocumentDetail({ currentUser }) {
     const updateOk = await updateDocumentStatus(doc.id, 'Completed', {
       actionTaken: completionDetails,
       completionAttachment: completionAttachmentName,
+      completionAttachmentFileName,
+      completionAttachmentUrl,
+      completionAttachmentStorageFolder,
       completedBy: currentUser?.name || 'Division Staff',
       completedAt: nowIso,
       routingHistory: [
@@ -720,20 +1010,48 @@ export default function DocumentDetail({ currentUser }) {
 
   const toggleRouteDivision = (division) => {
     if (division === mainRouteDivision) return
+
+    const isSelected = routeToDivisions.includes(division)
     setRouteToDivisions((prev) =>
       prev.includes(division)
         ? prev.filter((item) => item !== division)
         : [...prev, division]
     )
+
+    if (isSelected) {
+      setRouteAssignmentDraft((prev) => {
+        if (!Object.prototype.hasOwnProperty.call(prev, division)) return prev
+        const next = { ...prev }
+        delete next[division]
+        return next
+      })
+
+      if (division === OPM_DIVISION) {
+        setOpmAssignee('')
+      }
+    }
   }
 
   const selectMainRouteDivision = (division) => {
     setMainRouteDivision(division)
     setRouteToDivisions((prev) => prev.filter((item) => item !== division))
+    setRouteAssignmentDraft((prev) => {
+      if (!division || Object.prototype.hasOwnProperty.call(prev, division)) return prev
+      return {
+        ...prev,
+        [division]: { position: division === OPM_DIVISION ? String(opmAssignee || '') : '' },
+      }
+    })
   }
 
   const submitPMRoute = async (method) => {
     if (routingToDivision) return
+
+    const normalizedMethod = method === 'digital' ? 'digital' : method === 'both' ? 'both' : ''
+    if (!normalizedMethod) {
+      toast.error('PM routing supports only Physical + Digital or Digital Only.')
+      return
+    }
 
     if (!mainRouteDivision) {
       toast.error('Please select one main division.')
@@ -741,24 +1059,56 @@ export default function DocumentDetail({ currentUser }) {
     }
 
     const finalDivisions = [mainRouteDivision, ...routeToDivisions.filter((division) => division !== mainRouteDivision)]
+    const normalizedRouteAssignments = buildPmRouteAssignments({
+      divisions: finalDivisions,
+      runtimeCatalog: divisionPositionCatalog,
+      opmAssignee,
+    })
+    const mainDivisionPosition = getAssignedPosition(normalizedRouteAssignments, mainRouteDivision)
+    const resolvedOpmAssignee = getAssignedPosition(normalizedRouteAssignments, OPM_DIVISION)
+
+    if (!mainDivisionPosition) {
+      toast.error('Please assign a position for the Main OPR division.')
+      return
+    }
+
+    if (hasOpmSelection && !resolvedOpmAssignee) {
+      toast.error('Please assign an OPM position.')
+      return
+    }
+
+    const assignmentSummary = finalDivisions
+      .map((division) => {
+        const position = getAssignedPosition(normalizedRouteAssignments, division)
+        return position ? `${division} -> ${position}` : ''
+      })
+      .filter(Boolean)
+      .join(' | ')
+
     const routedDivisionLabel = finalDivisions.join(', ')
     const now = new Date()
 
     setRoutingToDivision(true)
-    const updateOk = await updateDocumentStatus(doc.id, 'Routed to Division', {
+    const updateOk = await updateDocumentStatus(doc.id, WORKFLOW_STATUS.ROUTED_CONCERNED, {
       targetDivision: mainRouteDivision,
       mainDivision: mainRouteDivision,
       oprDivision: mainRouteDivision,
       targetDivisions: finalDivisions,
       supportingDivisions: routeToDivisions,
+      routeAssignments: normalizedRouteAssignments,
+      oprAssignment: {
+        division: mainRouteDivision,
+        position: mainDivisionPosition,
+      },
       currentLocation: finalDivisions.length > 1 ? 'Multiple Divisions' : mainRouteDivision,
       action: routeAction,
       pmTransmittalInstructions: routeInstructions,
+      opmAssignee: resolvedOpmAssignee || '',
       routingHistory: [
         ...(doc.routingHistory || []),
         {
           office: routedDivisionLabel,
-          action: `Routed by PM (${method === 'both' ? 'Physical + Digital' : method === 'physical' ? 'Physical handover' : 'Digital assignment'}) — OPR/Main: ${mainRouteDivision}; Action: ${routeAction}${routeInstructions ? `; Instructions: ${routeInstructions}` : ''}`,
+          action: `Routed by PM (${normalizedMethod === 'both' ? 'Physical + Digital' : 'Digital assignment'}) — OPR/Main: ${mainRouteDivision}; Action: ${routeAction}${routeInstructions ? `; Instructions: ${routeInstructions}` : ''}${assignmentSummary ? `; Assignments: ${assignmentSummary}` : ''}`,
           date: now.toISOString().split('T')[0],
           time: now.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' }),
           user: currentUser?.name || 'PM',
@@ -776,13 +1126,15 @@ export default function DocumentDetail({ currentUser }) {
     toast.success(
       <div>
         <strong>Routed to {finalDivisions.length > 1 ? `${finalDivisions.length} divisions` : mainRouteDivision}!</strong><br />
-        {doc.trackingNumber} ({method === 'both' ? 'Physical + Digital' : method === 'physical' ? 'Physical handover' : 'Digital assignment'})
+        {doc.trackingNumber} ({normalizedMethod === 'both' ? 'Physical + Digital' : 'Digital assignment'})
       </div>,
       { duration: 4000 }
     )
 
     setRoutingToDivision(false)
     setShowPMRoutingModal(false)
+    setRouteAssignmentDraft({})
+    setOpmAssignee('')
   }
 
   const closeEndorseModal = () => {
@@ -790,6 +1142,42 @@ export default function DocumentDetail({ currentUser }) {
     setShowEndorseModal(false)
     setEndorseRemarks('')
     setGenerateTransmittal(true)
+  }
+
+  const showUndoableStatusToast = ({ title, detail, onUndo }) => {
+    toast((t) => (
+      <div style={{ minWidth: 280 }}>
+        <div className="fw-semibold" style={{ fontSize: 13 }}>{title}</div>
+        <div style={{ fontSize: 12, color: '#495057', marginTop: 2 }}>{detail}</div>
+        <div style={{ fontSize: 11, color: '#6c757d', marginTop: 4 }}>
+          Closing this notice keeps the endorsement. Use Undo to revert.
+        </div>
+        <div className="d-flex justify-content-end gap-2 mt-2">
+          <button
+            type="button"
+            className="btn btn-sm btn-outline-secondary"
+            onClick={() => toast.dismiss(t.id)}
+          >
+            Keep Endorsed
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm btn-primary"
+            onClick={async () => {
+              toast.dismiss(t.id)
+              const undoOk = await onUndo()
+              if (undoOk) {
+                toast.success('Last endorsement was reverted.')
+              } else {
+                toast.error('Undo failed. Please try again.')
+              }
+            }}
+          >
+            Undo
+          </button>
+        </div>
+      </div>
+    ), { duration: 10000 })
   }
 
   const handleEndorseToOpm = async () => {
@@ -826,6 +1214,16 @@ export default function DocumentDetail({ currentUser }) {
     const processingTimeLabel = hasRegistrationStart ? `${processingTimeMinutes} mins` : 'N/A'
     const slaLabel = hasRegistrationStart ? (slaMet ? 'MET' : 'BREACHED') : 'UNKNOWN'
 
+    const previousStatus = doc.status
+    const rollbackPayload = {
+      currentLocation: doc.currentLocation || 'Records Section',
+      targetDivision: doc.targetDivision || '',
+      processingTimeMinutes: doc.processingTimeMinutes ?? null,
+      slaMet: typeof doc.slaMet === 'boolean' ? doc.slaMet : null,
+      instructionComments: Array.isArray(doc.instructionComments) ? [...doc.instructionComments] : [],
+      routingHistory: Array.isArray(doc.routingHistory) ? [...doc.routingHistory] : [],
+    }
+
     const trimmedRemarks = endorseRemarks.trim()
     const nextInstructionComments = trimmedRemarks
       ? [
@@ -835,22 +1233,23 @@ export default function DocumentDetail({ currentUser }) {
             roleLabel: 'RECORDS',
             name: currentUser?.name || 'Records Section',
             comment: trimmedRemarks,
+            remarkType: 'records-endorse-to-opm',
             createdAt: nowIso,
           },
         ]
       : doc.instructionComments
 
-    const updateOk = await updateDocumentStatus(doc.id, 'For OPM Assistant Review', {
-      currentLocation: 'OPM Assistant Desk',
-      targetDivision: 'OPM Assistant Desk',
+    const updateOk = await updateDocumentStatus(doc.id, WORKFLOW_STATUS.OPM_INITIAL_REVIEW, {
+      currentLocation: 'Office of the Port Manager (OPM)',
+      targetDivision: 'Office of the Port Manager (OPM)',
       processingTimeMinutes,
       slaMet,
       instructionComments: nextInstructionComments,
       routingHistory: [
         ...(doc.routingHistory || []),
         {
-          office: 'OPM Assistant Desk',
-          action: `Submitted for completeness check (files, transmittal details, full record); Endorsed to OPM (Processing time: ${processingTimeLabel}; SLA: ${slaLabel})`,
+          office: 'Office of the Port Manager (OPM)',
+          action: `Endorsed to OPM for initial review (files, transmittal details, complete record); Processing time: ${processingTimeLabel}; SLA: ${slaLabel}`,
           date: now.toISOString().split('T')[0],
           time: now.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' }),
           user: currentUser?.name || 'Records Section',
@@ -860,18 +1259,16 @@ export default function DocumentDetail({ currentUser }) {
     })
 
     if (!updateOk) {
-      toast.error('Failed to send document to OPM Assistant Review.')
+      toast.error('Failed to send document to OPM.')
       setEndorsingToOpm(false)
       return
     }
 
-    toast.success(
-      <div>
-        <strong>Sent to OPM Assistant Review!</strong><br />
-        {doc.trackingNumber} {'->'} OPM Assistant (for verification before OPM)
-      </div>,
-      { duration: 4000 }
-    )
+    showUndoableStatusToast({
+      title: 'Sent to OPM!',
+      detail: `${doc.trackingNumber} -> Office of the Port Manager (initial review)`,
+      onUndo: async () => updateDocumentStatus(doc.id, previousStatus, rollbackPayload),
+    })
 
     if (generateTransmittal) {
       toast('Transmittal slip remains available in this document view.', { icon: 'i' })
@@ -894,40 +1291,48 @@ export default function DocumentDetail({ currentUser }) {
 
     const now = new Date()
     const nowIso = now.toISOString()
+    const previousStatus = doc.status
+    const rollbackPayload = {
+      currentLocation: doc.currentLocation || OPM_DIVISION,
+      targetDivision: doc.targetDivision || OPM_DIVISION,
+      instructionComments: Array.isArray(doc.instructionComments) ? [...doc.instructionComments] : [],
+      routingHistory: Array.isArray(doc.routingHistory) ? [...doc.routingHistory] : [],
+    }
     const trimmedRemarks = assistantRemarks.trim()
 
     const authAction = trimmedRemarks
-      ? `Verified by OPM Assistant and forwarded to PM; Remarks: ${trimmedRemarks}`
-      : 'Verified by OPM Assistant and forwarded to PM'
+      ? `Verified by OPM and forwarded to PM; Remarks: ${trimmedRemarks}`
+      : 'Verified by OPM and forwarded to PM'
 
-    const delegationCommentText = '[OPM Assistant remarks] ' + trimmedRemarks
+    const delegationCommentText = '[OPM endorsement remark] ' + trimmedRemarks
     const nextInstructionComments = trimmedRemarks
       ? [
           ...(Array.isArray(doc.instructionComments) ? doc.instructionComments : []),
           {
             id: `INS-${Date.now()}`,
-            roleLabel: 'OPM Assistant',
-            name: currentUser?.name || 'Assistant',
+            roleLabel: 'OPM',
+            name: currentUser?.name || 'OPM',
             comment: delegationCommentText,
             text: delegationCommentText,
-            authorName: currentUser?.name || 'Assistant',
+            authorName: currentUser?.name || 'OPM',
+            remarkType: 'opm-endorse-to-pm',
             createdAt: nowIso,
           },
         ]
       : doc.instructionComments
 
-    const updateOk = await updateDocumentStatus(doc.id, 'Endorsed to OPM', {
-      currentLocation: 'Office of the Port Manager (OPM)',
-      targetDivision: 'Office of the Port Manager (OPM)',
+    const updateOk = await updateDocumentStatus(doc.id, WORKFLOW_STATUS.PM_REVIEW, {
+      currentLocation: 'Port Manager (PM)',
+      targetDivision: 'Port Manager (PM)',
       instructionComments: nextInstructionComments,
       routingHistory: [
         ...(doc.routingHistory || []),
         {
-          office: 'Office of the Port Manager (OPM)',
+          office: 'Port Manager (PM)',
           action: authAction,
           date: nowIso.split('T')[0],
           time: now.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' }),
-          user: currentUser?.name || 'OPM Assistant',
+          user: currentUser?.name || 'OPM',
           status: 'done',
         },
       ],
@@ -939,13 +1344,11 @@ export default function DocumentDetail({ currentUser }) {
       return
     }
 
-    toast.success(
-      <div>
-        <strong>Forwarded to PM!</strong><br />
-        {doc.trackingNumber} passed assistant review.
-      </div>,
-      { duration: 4000 }
-    )
+    showUndoableStatusToast({
+      title: 'Document Forwarded to PM!',
+      detail: `${doc.trackingNumber} -> Port Manager (PM)`,
+      onUndo: async () => updateDocumentStatus(doc.id, previousStatus, rollbackPayload),
+    })
 
     setShowAssistantEndorseModal(false)
     setAssistantRemarks('')
@@ -1179,23 +1582,28 @@ export default function DocumentDetail({ currentUser }) {
   const hasUserAcknowledged = Array.isArray(doc.divisionReceipts) && doc.divisionReceipts.some(r => r.division === currentUser?.division)
 
   return (
-    <>
-      <div className="page-header d-flex justify-content-between align-items-start no-print">
+    <div className="doc-detail-page">
+      <div className="page-header doc-detail-header d-flex justify-content-between align-items-start no-print">
         <div>
           <h4>
             <span className="tracking-number" style={{ fontSize: 20 }}>{doc.trackingNumber}</span>
           </h4>
           <p>{doc.subject}</p>
         </div>
-        <div className="d-flex gap-2">
-          {isIncoming && currentUser?.systemRole === 'Operator' && doc.status === 'Registered' && (
-            <Button size="sm" onClick={() => setShowEndorseModal(true)}>
+        <div className="d-flex gap-2 doc-detail-header-actions">
+          {canOperatorEndorseToOpm && (
+            <Button size="sm" className="doc-detail-primary-action" onClick={() => setShowEndorseModal(true)}>
               <i className="bi bi-send me-1"></i>Endorse to OPM
+            </Button>
+          )}
+          {operatorAlreadyEndorsed && (
+            <Button size="sm" variant="outline-success" className="doc-detail-pill" disabled title={`Current status: ${getStatusDisplayLabel(doc.status)}`}>
+              <i className="bi bi-check2-circle me-1"></i>Already Endorsed to OPM
             </Button>
           )}
           {isIncoming && currentUser?.systemRole === 'OPM Assistant' && (
             <Link to="/opm-assistant" className="btn btn-outline-primary btn-sm">
-              <i className="bi bi-person-check me-1"></i>Open Review Queue
+              <i className="bi bi-person-check me-1"></i>Open OPM Queue
             </Link>
           )}
           {isIncoming && currentUser?.systemRole === 'PM' && (
@@ -1229,10 +1637,27 @@ export default function DocumentDetail({ currentUser }) {
         </div>
       </div>
 
-      <Row className="g-4">
+      {operatorAlreadyEndorsed && latestOperatorOpmEndorseStep && (
+        <div className="alert alert-success py-2 px-3 mb-3 no-print doc-detail-banner" style={{ fontSize: 12 }}>
+          <div className="fw-semibold"><i className="bi bi-check2-circle me-1"></i>Endorsement Logged</div>
+          <div>
+            Sent to OPM on <strong>{operatorEndorseTimestamp || 'timestamp unavailable'}</strong>
+            {operatorEndorseBy ? ` by ${operatorEndorseBy}` : ''}.
+          </div>
+        </div>
+      )}
+
+      {operatorNextAction && (
+        <div className={`alert alert-${operatorNextAction.tone} py-2 px-3 mb-3 no-print doc-detail-banner`} style={{ fontSize: 12 }}>
+          <div className="fw-semibold">{operatorNextAction.title}</div>
+          <div>{operatorNextAction.text}</div>
+        </div>
+      )}
+
+      <Row className="g-4 doc-detail-grid">
         {/* Document Info */}
         <Col lg={8}>
-          <div className="content-card mb-4">
+          <div className="content-card mb-4 doc-detail-info-card">
             <div className="content-card-header">
               <h6><i className="bi bi-file-text me-2"></i>Document Information</h6>
               <div className="d-flex align-items-center gap-2">
@@ -1270,17 +1695,29 @@ export default function DocumentDetail({ currentUser }) {
                     )}
                   </div>
                 </Col>
-                <Col sm={6}>
-                  <div className="mb-3">
-                    <small className="text-muted d-block">{isIncoming ? 'Target Division' : 'Origin Division'}</small>
-                    <span>{isIncoming ? targetDivisionText : doc.originDivision}</span>
-                  </div>
-                </Col>
-                {isIncoming && doc.oprDivision && (
+                {!isIncoming && (
                   <Col sm={6}>
                     <div className="mb-3">
-                      <small className="text-muted d-block">OPR (Main Division)</small>
-                      <span className="fw-semibold">{doc.oprDivision}</span>
+                      <small className="text-muted d-block">Origin Division</small>
+                      <span>{doc.originDivision}</span>
+                    </div>
+                  </Col>
+                )}
+                {isIncoming && (doc.oprDivision || doc.mainDivision || targetDivisionText) && (
+                  <Col sm={6}>
+                    <div className="mb-3">
+                      <small className="text-muted d-block">Routed To:</small>
+                      <span className="fw-semibold">{doc.oprDivision || doc.mainDivision || targetDivisionText || 'Pending PM Routing'}</span>
+                      {supportingDivisionDisplayList.length > 0 && (
+                        <div className="text-muted" style={{ fontSize: 12 }}>
+                          CF Party(ies): {supportingDivisionDisplayList.join(', ')}
+                        </div>
+                      )}
+                      {routingAssignmentSummary.length > 0 && (
+                        <div className="text-muted" style={{ fontSize: 12 }}>
+                          Position Assignments: {routingAssignmentSummary.join(' | ')}
+                        </div>
+                      )}
                     </div>
                   </Col>
                 )}
@@ -1290,12 +1727,14 @@ export default function DocumentDetail({ currentUser }) {
                     <span>{isIncoming ? `${doc.dateReceived} ${doc.timeReceived}` : `${doc.dateReleased || 'Pending'} ${doc.timeReleased || ''}`}</span>
                   </div>
                 </Col>
-                <Col sm={6}>
-                  <div className="mb-3">
-                    <small className="text-muted d-block">{isIncoming ? 'Received By' : 'Released By'}</small>
-                    <span>{isIncoming ? doc.receivedBy : doc.releasedBy || 'Pending'}</span>
-                  </div>
-                </Col>
+                {!isIncoming && (
+                  <Col sm={6}>
+                    <div className="mb-3">
+                      <small className="text-muted d-block">Released By</small>
+                      <span>{doc.releasedBy || 'Pending'}</span>
+                    </div>
+                  </Col>
+                )}
                 <Col sm={6}>
                   <div className="mb-3">
                     <small className="text-muted d-block">Pages</small>
@@ -1308,6 +1747,36 @@ export default function DocumentDetail({ currentUser }) {
                     <span className="fw-semibold">{doc.currentLocation || doc.originDivision}</span>
                   </div>
                 </Col>
+                {hasCompletionSummary && (
+                  <Col sm={12}>
+                    <div className="mb-3 p-2 rounded" style={{ background: '#f8fff5', border: '1px solid #d7ebdd' }}>
+                      <small className="text-muted d-block">Closure Details</small>
+                      {completionDetailsText && (
+                        <div style={{ fontSize: 13 }}>
+                          <strong>Action/s Taken:</strong> {completionDetailsText}
+                        </div>
+                      )}
+                      {(completedByText || completedAtText) && (
+                        <div style={{ fontSize: 13 }}>
+                          <strong>Closed By:</strong> {completedByText || 'N/A'}
+                          {completedAtText ? ` · ${completedAtText}` : ''}
+                        </div>
+                      )}
+                      {(completionAttachmentLabel || completionAttachmentFileName) && (
+                        <div style={{ fontSize: 13 }}>
+                          <strong>Proof:</strong>{' '}
+                          {resolvedCompletionAttachmentUrl ? (
+                            <a href={resolvedCompletionAttachmentUrl} target="_blank" rel="noreferrer">
+                              {completionAttachmentLabel || completionAttachmentFileName}
+                            </a>
+                          ) : (
+                            <span>{completionAttachmentLabel || completionAttachmentFileName}</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </Col>
+                )}
                 {doc.remarks && (
                   <Col sm={12}>
                     <div className="mb-0">
@@ -1444,7 +1913,7 @@ export default function DocumentDetail({ currentUser }) {
         {/* Right: Control/Reference # Sticker + Transmittal + Attachments */}
         <Col lg={4}>
           {isOpmAssistant && isForOpmReview && (
-            <div className="content-card mb-4" style={{ border: '2px solid #0d6efd', boxShadow: '0 4px 12px rgba(13,110,253,0.15)' }}>
+            <div className="content-card mb-4 doc-detail-security-card" style={{ border: '2px solid #0d6efd', boxShadow: '0 4px 12px rgba(13,110,253,0.15)' }}>
               <div className="content-card-header bg-primary text-white border-bottom-0">
                 <h6 className="mb-0 text-white"><i className="bi bi-shield-lock-fill me-2"></i>OPM Security Verification</h6>
               </div>
@@ -1511,7 +1980,7 @@ export default function DocumentDetail({ currentUser }) {
           )}
 
           {/* Division Receipt Tracker */}
-          <div className="content-card mb-4">
+          <div className="content-card mb-4 doc-detail-receipt-card">
             <div className="content-card-header">
               <h6><i className="bi bi-bell me-2"></i>Division Receipt Notifications</h6>
               <span className={`badge ${fullyReceivedByAllDivisions ? 'bg-success-subtle text-success border border-success-subtle' : 'bg-warning-subtle text-warning border border-warning-subtle'}`} style={{ fontSize: 11 }}>
@@ -1536,7 +2005,7 @@ export default function DocumentDetail({ currentUser }) {
                         <div className="d-flex justify-content-between align-items-start gap-2">
                           <div>
                             <div className="fw-semibold" style={{ fontSize: 13 }}>
-                              {isMain ? 'OPR/Main: ' : ''}{division}
+                              {isMain ? 'Main OPR: ' : ''}{division}
                               {isMain && <span className="badge bg-danger ms-2" style={{ fontSize: 10 }}>M</span>}
                             </div>
                             <div style={{ fontSize: 11, color: '#6c757d' }}>
@@ -1563,7 +2032,7 @@ export default function DocumentDetail({ currentUser }) {
           </div>
 
           {/* Incoming Transmittal Slip */}
-          <div className="content-card mb-4">
+          <div className="content-card mb-4 doc-detail-transmittal-card">
             <div className="content-card-header">
               <h6><i className="bi bi-file-earmark-text me-2"></i>Incoming Transmittal Slip</h6>
               {canPrintTransmittalSlip && !shouldHidePrintForSupportingDivision && (
@@ -1580,7 +2049,7 @@ export default function DocumentDetail({ currentUser }) {
             </div>
           </div>
 
-          <div className="content-card mb-4 no-print">
+          <div className="content-card mb-4 no-print doc-detail-comments-card">
             <div className="content-card-header">
               <h6><i className="bi bi-chat-left-text me-2"></i>Instruction Comments</h6>
             </div>
@@ -1604,12 +2073,23 @@ export default function DocumentDetail({ currentUser }) {
                 <div className="mt-3" style={{ fontSize: 12 }}>
                   {instructionComments.map((entry) => {
                     let text = entry.comment || ''
+                    const isOpmEndorse = isOpmEndorseRemark(entry)
+                    const isRecordsEndorse = isRecordsEndorseRemark(entry)
                     if (text.startsWith('[OPM Assistant remarks] ')) {
                       text = text.replace('[OPM Assistant remarks] ', '')
                     }
+                    if (text.startsWith('[OPM remarks] ')) {
+                      text = text.replace('[OPM remarks] ', '')
+                    }
+                    if (text.startsWith('[OPM endorsement remark] ')) {
+                      text = text.replace('[OPM endorsement remark] ', '')
+                    }
+                    if (text.startsWith('[Records endorsement remark] ')) {
+                      text = text.replace('[Records endorsement remark] ', '')
+                    }
                     return (
                       <div key={entry.id || `${entry.roleLabel}-${entry.name}-${entry.createdAt}`} className="p-2 rounded mb-2" style={{ background: '#f8f9fa', border: '1px solid #e9ecef' }}>
-                        <div className="fw-semibold">{entry.roleLabel}{entry.name ? ` (${entry.name})` : ''}</div>
+                        <div className="fw-semibold">{isOpmEndorse ? 'Remarks by OPM to PM:' : isRecordsEndorse ? 'Remarks by Records Division' : `${entry.roleLabel}${entry.name ? ` (${entry.name})` : ''}`}</div>
                         <div>{text}</div>
                       </div>
                     )
@@ -1689,7 +2169,7 @@ export default function DocumentDetail({ currentUser }) {
           </div>
 
           <Form.Group className="mb-3">
-            <Form.Label className="fw-semibold" style={{ fontSize: 13 }}>Assign To</Form.Label>
+            <Form.Label className="fw-semibold" style={{ fontSize: 13 }}>Assign To (Division Delegate Position)</Form.Label>
             <Form.Select
               value={selectedPersonnel}
               onChange={(e) => setSelectedPersonnel(e.target.value)}
@@ -1697,8 +2177,8 @@ export default function DocumentDetail({ currentUser }) {
             >
               <option value="">
                 {divisionPersonnelOptions.length > 0
-                  ? 'Select personnel...'
-                  : 'No mock personnel configured for this division'}
+                  ? 'Select delegate position...'
+                  : 'No delegate positions found for this division'}
               </option>
               {divisionPersonnelOptions.map((person) => (
                 <option key={person} value={person}>{person}</option>
@@ -1774,6 +2254,7 @@ export default function DocumentDetail({ currentUser }) {
             <Form.Label className="fw-semibold" style={{ fontSize: 13 }}>Upload Proof of Action (e.g., Drafted Reply, Signed Memo)</Form.Label>
             <Form.Control
               type="file"
+              accept=".pdf,image/*"
               onChange={(e) => setCompletionFile(e.target.files?.[0] || null)}
               disabled={completingTask}
             />
@@ -1840,24 +2321,22 @@ export default function DocumentDetail({ currentUser }) {
 
             <Col md={6}>
               <Form.Group className="mb-3">
-                <Form.Label className="fw-semibold" style={{ fontSize: 13 }}>Transmittal Action</Form.Label>
+                <Form.Label className="fw-semibold" style={{ fontSize: 13 }}>Required Action</Form.Label>
                 <Form.Select
                   value={routeAction}
                   onChange={(e) => setRouteAction(e.target.value)}
                   disabled={routingToDivision}
                 >
-                  <option>For review and appropriate action</option>
-                  <option>For information</option>
-                  <option>For approval / signature</option>
-                  <option>For compliance</option>
-                  <option>For comment / recommendation</option>
+                  {TRANSMITTAL_ACTION_OPTIONS.map((option) => (
+                    <option key={option} value={option}>{option}</option>
+                  ))}
                 </Form.Select>
               </Form.Group>
             </Col>
 
             <Col md={12}>
               <Form.Group>
-                <Form.Label className="fw-semibold mb-1" style={{ fontSize: 13 }}>Supporting Division(s)</Form.Label>
+                <Form.Label className="fw-semibold mb-1" style={{ fontSize: 13 }}>CF Party(ies)</Form.Label>
                 <div style={{ border: '1px solid #dee2e6', borderRadius: 6, padding: 10, maxHeight: 160, overflowY: 'auto' }}>
                   {routeDivisionOptions.map((division) => {
                     const isMain = division === mainRouteDivision
@@ -1878,18 +2357,18 @@ export default function DocumentDetail({ currentUser }) {
                 </div>
                 <div className="mt-2 text-muted" style={{ fontSize: 12 }}>
                   Main: {mainRouteDivision || 'None'}
-                  {routeToDivisions.length > 0 ? ` · Supporting: ${routeToDivisions.join(', ')}` : ' · Supporting: None'}
+                  {routeToDivisions.length > 0 ? ` · CF Party(ies): ${routeToDivisions.join(', ')}` : ' · CF Party(ies): None'}
                 </div>
               </Form.Group>
             </Col>
 
             <Col md={12}>
               <Form.Group>
-                <Form.Label className="fw-semibold" style={{ fontSize: 13 }}>Transmittal Slip Comments</Form.Label>
+                <Form.Label className="fw-semibold" style={{ fontSize: 13 }}>PM's Instructions</Form.Label>
                 <Form.Control
                   as="textarea"
                   rows={3}
-                  placeholder="Add comments for the transmittal slip..."
+                  placeholder="Add PM instructions..."
                   value={routeInstructions}
                   onChange={(e) => setRouteInstructions(e.target.value)}
                   disabled={routingToDivision}
@@ -1901,9 +2380,6 @@ export default function DocumentDetail({ currentUser }) {
         <Modal.Footer>
           <Button variant="primary" onClick={() => submitPMRoute('both')} disabled={routingToDivision}>
             <i className="bi bi-send-check me-1"></i>Route (Physical + Digital)
-          </Button>
-          <Button variant="outline-primary" onClick={() => submitPMRoute('physical')} disabled={routingToDivision}>
-            <i className="bi bi-person-walking me-1"></i>Physical Only
           </Button>
           <Button variant="outline-secondary" onClick={() => submitPMRoute('digital')} disabled={routingToDivision}>
             <i className="bi bi-cloud-check me-1"></i>Digital Only
@@ -1926,6 +2402,10 @@ export default function DocumentDetail({ currentUser }) {
         <Modal.Body>
           <div className="text-secondary small mb-3">
             Digital and physical verification completed for <strong>{doc.trackingNumber}</strong>. You are now endorsing this document to the Port Manager for action.
+          </div>
+          <div className="alert alert-light border py-2 px-3" style={{ fontSize: 12 }}>
+            <i className="bi bi-arrow-counterclockwise me-1"></i>
+            You can undo this endorsement for a few seconds right after confirmation.
           </div>
           
           <Form.Group className="mb-3">
@@ -1958,6 +2438,7 @@ export default function DocumentDetail({ currentUser }) {
         show={showEndorseModal}
         onHide={closeEndorseModal}
         size="lg"
+        className="doc-detail-endorse-modal"
         centered
         backdrop="static"
         keyboard={!endorsingToOpm}
@@ -1969,17 +2450,21 @@ export default function DocumentDetail({ currentUser }) {
         </Modal.Header>
         <Modal.Body>
           <div className="small text-muted mb-4">
-            <strong>Proposed Flow Step 6:</strong> Submit <span className="tracking-number">{doc.trackingNumber}</span> to OPM Assistant for verification before OPM endorsement.
+            Submit <span className="tracking-number">{doc.trackingNumber}</span> to Office of the Port Manager (OPM) for initial review before PM evaluation.
+          </div>
+          <div className="alert alert-light border py-2 px-3 doc-detail-endorse-note" style={{ fontSize: 12 }}>
+            <i className="bi bi-arrow-counterclockwise me-1"></i>
+            You can undo this endorsement for a few seconds right after sending.
           </div>
 
           <Row className="g-3">
             <Col lg={7}>
-              <div className="border rounded p-3" style={{ background: '#fff' }}>
+              <div className="border rounded p-3 endorse-detail-panel" style={{ background: '#fff' }}>
                 <div className="fw-semibold mb-2" style={{ fontSize: 14 }}>
                   <i className="bi bi-file-earmark-text me-2"></i>Endorsement Details
                 </div>
 
-                <div className="border rounded-3 bg-light p-3 p-md-4 mb-4">
+                <div className="border rounded-3 bg-light p-3 p-md-4 mb-4 endorse-summary-block">
                   <div className="d-flex flex-wrap justify-content-between align-items-start gap-3">
                     <div style={{ minWidth: 220, flex: '1 1 220px' }}>
                       <small className="text-secondary fw-normal d-block mb-1">Subject</small>
@@ -1991,14 +2476,14 @@ export default function DocumentDetail({ currentUser }) {
                     </div>
                     <div style={{ minWidth: 120, flex: '0 0 auto' }}>
                       <small className="text-secondary fw-normal d-block mb-1">Status</small>
-                      <div className="fw-bold text-dark text-nowrap" style={{ fontSize: 13 }} title={doc.status}>{doc.status}</div>
+                      <div className="fw-bold text-dark text-nowrap" style={{ fontSize: 13 }} title={getStatusDisplayLabel(doc.status)}>{getStatusDisplayLabel(doc.status)}</div>
                     </div>
                   </div>
                 </div>
 
                 <Form.Group className="mb-4">
                   <Form.Label className="fw-normal text-secondary">Endorse To</Form.Label>
-                  <Form.Control plaintext readOnly value="OPM Assistant Desk (Pre-OPM Review)" className="fw-bold text-dark" />
+                  <Form.Control plaintext readOnly value="Office of the Port Manager (OPM initial review)" className="fw-bold text-dark" />
                 </Form.Group>
 
                 <Form.Group className="mb-4">
@@ -2026,35 +2511,31 @@ export default function DocumentDetail({ currentUser }) {
             </Col>
 
             <Col lg={5}>
-              <div className="border rounded p-3" style={{ background: '#fff' }}>
+              <div className="border rounded p-3 endorse-flow-panel" style={{ background: '#fff' }}>
                 <div className="fw-semibold mb-2" style={{ fontSize: 14 }}>
                   <i className="bi bi-diagram-3 me-2"></i>Routing Flow
                 </div>
-                <div className="small text-muted mb-3">
-                  {'Standard flow: Records -> OPM Assistant -> OPM -> Concerned Division'}
-                </div>
-
                 {[
                   { name: 'Records Section', icon: 'bi-inbox-fill', done: true },
                   {
-                    name: 'OPM Assistant Desk',
-                    icon: 'bi-person-check-fill',
-                    done: endorsingToOpm || doc.status === 'For OPM Assistant Review' || doc.status === 'Endorsed to OPM' || doc.status === 'Routed to Division' || doc.status === 'Received & Acknowledged',
-                  },
-                  {
                     name: 'Office of the Port Manager (OPM)',
                     icon: 'bi-building',
-                    done: doc.status === 'Endorsed to OPM' || doc.status === 'Routed to Division' || doc.status === 'Received & Acknowledged',
+                    done: endorsingToOpm || doc.status === WORKFLOW_STATUS.OPM_INITIAL_REVIEW || doc.status === WORKFLOW_STATUS.PM_REVIEW || doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED || doc.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED,
                   },
                   {
-                    name: targetDivisionText || 'Concerned Division',
+                    name: 'Port Manager (PM)',
+                    icon: 'bi-briefcase-fill',
+                    done: doc.status === WORKFLOW_STATUS.PM_REVIEW || doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED || doc.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED,
+                  },
+                  {
+                    name: targetDivisionText || 'RC/s Concerned',
                     icon: 'bi-people-fill',
-                    done: doc.status === 'Received & Acknowledged',
+                    done: doc.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED,
                   },
                 ].map((step, i, arr) => (
                   <div key={step.name}>
                     <div
-                      className={`d-flex align-items-center gap-3 p-3 p-md-4 rounded border shadow-sm ${step.done ? 'border-start border-3 border-primary' : 'border-light'}`}
+                      className={`endorse-flow-step d-flex align-items-center gap-3 p-3 p-md-4 rounded border shadow-sm ${step.done ? 'border-start border-3 border-primary' : 'border-light'}`}
                       style={{ background: step.done ? '#e7f1ff' : '#f8f9fa' }}
                     >
                       <i className={`bi ${step.icon} ${step.done ? 'text-primary' : 'text-muted'}`} style={{ fontSize: 20 }}></i>
@@ -2076,7 +2557,7 @@ export default function DocumentDetail({ currentUser }) {
             </Col>
           </Row>
         </Modal.Body>
-        <Modal.Footer>
+        <Modal.Footer className="doc-detail-endorse-footer">
           <Button variant="outline-secondary" onClick={closeEndorseModal} disabled={endorsingToOpm}>
             Cancel
           </Button>
@@ -2088,12 +2569,12 @@ export default function DocumentDetail({ currentUser }) {
               </>
             ) : (
               <>
-                <i className="bi bi-send-check me-1"></i>Send to OPM Assistant Review
+                <i className="bi bi-send-check me-1"></i>Send to OPM
               </>
             )}
           </Button>
         </Modal.Footer>
       </Modal>
-    </>
+    </div>
   )
 }

@@ -5,6 +5,7 @@ import { DOCUMENT_TYPES, DIVISIONS } from '../data/mockData'
 import { useDocuments } from '../context/DocumentContext'
 import { useAuth } from '../context/AuthContext'
 import { inferDocumentDirection } from '../utils/documentDirection'
+import { WORKFLOW_STATUS, getStatusDisplayLabel } from '../utils/workflowLabels'
 
 function formatDurationReadable(minsDecimal) {
   if (minsDecimal === null || minsDecimal === undefined || isNaN(minsDecimal)) return '—'
@@ -93,13 +94,13 @@ export default function Reports() {
   }
 
   return (
-    <>
-      <div className="page-header d-flex justify-content-between align-items-start">
+    <div className="reports-page">
+      <div className="page-header reports-header d-flex justify-content-between align-items-start">
         <div>
           <h4>Monitoring Log / Reports</h4>
           <p>Spreadsheet view — dense layout for printing and Excel export</p>
         </div>
-        <div className="d-flex gap-2">
+        <div className="d-flex gap-2 reports-header-actions">
           <Button variant="outline-primary" onClick={() => window.print()}>
             <i className="bi bi-printer me-1"></i>Print Report
           </Button>
@@ -128,9 +129,9 @@ export default function Reports() {
       </div>
 
       {/* Filters */}
-      <div className="content-card mb-3">
-        <div className="content-card-body py-3">
-          <Row className="g-2 align-items-end">
+      <div className="content-card mb-3 reports-filter-card">
+        <div className="content-card-body py-3 reports-filter-body">
+          <Row className="g-2 align-items-end reports-filter-row">
             <Col md={2}>
               <Form.Label style={{ fontSize: 12 }}>Direction</Form.Label>
               <Form.Select size="sm" value={directionFilter} onChange={e => setDirectionFilter(e.target.value)}>
@@ -143,10 +144,11 @@ export default function Reports() {
               <Form.Label style={{ fontSize: 12 }}>Status</Form.Label>
               <Form.Select size="sm" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
                 <option value="">All Statuses</option>
-                <option value="Registered">Registered</option>
-                <option value="Endorsed to OPM">Endorsed to OPM</option>
-                <option value="Routed to Division">Routed to Division</option>
-                <option value="Received & Acknowledged">Received & Acknowledged</option>
+                <option value={WORKFLOW_STATUS.REGISTERED}>{getStatusDisplayLabel(WORKFLOW_STATUS.REGISTERED)}</option>
+                <option value={WORKFLOW_STATUS.OPM_INITIAL_REVIEW}>{getStatusDisplayLabel(WORKFLOW_STATUS.OPM_INITIAL_REVIEW)}</option>
+                <option value={WORKFLOW_STATUS.PM_REVIEW}>{getStatusDisplayLabel(WORKFLOW_STATUS.PM_REVIEW)}</option>
+                <option value={WORKFLOW_STATUS.ROUTED_CONCERNED}>{getStatusDisplayLabel(WORKFLOW_STATUS.ROUTED_CONCERNED)}</option>
+                <option value={WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED}>{getStatusDisplayLabel(WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED)}</option>
               </Form.Select>
             </Col>
             <Col md={2}>
@@ -167,7 +169,7 @@ export default function Reports() {
       </div>
 
       {/* Summary Stats */}
-      <Row className="g-3 mb-3">
+      <Row className="g-3 mb-3 reports-stat-grid">
         {[
           { label: 'Total Records', value: filtered.length, color: '#002868' },
           { label: 'Incoming', value: filtered.filter(e => e.direction === 'Incoming').length, color: '#0dcaf0' },
@@ -175,7 +177,7 @@ export default function Reports() {
           { label: 'Completed', value: filtered.filter(e => e.status === 'Received & Acknowledged' || e.status === 'Completed' || e.status === 'Released').length, color: '#6f42c1' },
         ].map((s, i) => (
           <Col key={i} sm={3}>
-            <div className="p-3 rounded text-center" style={{ background: '#fff', border: '1px solid #e9ecef' }}>
+            <div className="p-3 rounded text-center reports-stat-card" style={{ background: '#fff', border: '1px solid #e9ecef' }}>
               <div style={{ fontSize: 24, fontWeight: 700, color: s.color }}>{s.value}</div>
               <div style={{ fontSize: 12, color: '#6c757d' }}>{s.label}</div>
             </div>
@@ -184,14 +186,14 @@ export default function Reports() {
       </Row>
 
       {/* Table — RECORDS INCOMING LOGBOOK */}
-      <div className="content-card reports-print-area">
-        <div className="content-card-header" style={{ background: '#002868', color: '#fff', textAlign: 'center' }}>
+      <div className="content-card reports-print-area reports-log-card">
+        <div className="content-card-header reports-log-header" style={{ background: '#002868', color: '#fff', textAlign: 'center' }}>
           <h6 style={{ color: '#fff', margin: 0, width: '100%', textAlign: 'center', fontSize: 14, letterSpacing: 1 }}>
             <i className="bi bi-journal-bookmark-fill me-2"></i>RECORDS INCOMING LOGBOOK
           </h6>
         </div>
         <div className="table-responsive">
-          <table className="excel-table">
+          <table className="excel-table reports-log-table">
             <thead>
               <tr>
                 <th style={{ width: 40 }}>#</th>
@@ -233,7 +235,7 @@ export default function Reports() {
           </table>
         </div>
         {/* Summary row — matches the yellow box in the PDF */}
-        <div style={{ background: '#fef9c3', border: '1px solid #d4a017', padding: '10px 16px', fontSize: 12 }}>
+        <div className="reports-summary-bar" style={{ background: '#fef9c3', border: '1px solid #d4a017', padding: '10px 16px', fontSize: 12 }}>
           <div className="d-flex justify-content-between">
             <div>
               <strong>Summary</strong>
@@ -248,6 +250,6 @@ export default function Reports() {
           </div>
         </div>
       </div>
-    </>
+    </div>
   )
 }

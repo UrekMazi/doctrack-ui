@@ -149,7 +149,7 @@ Modal behavior (`Complete Task & Close Document`):
 
 Important as-built behavior note:
 
-- The uploaded proof file is currently captured as filename metadata in document state; binary file persistence for this proof field is not implemented in this modal yet.
+- The completion modal now uploads proof binary to backend storage (`/api/documents/<doc_id>/completion-proof`) and persists proof metadata (`completionAttachment`, `completionAttachmentFileName`, `completionAttachmentUrl`, `completionAttachmentStorageFolder`) in document state.
 - Completion visibility is main-division based; there is currently no additional check that the current user matches `assignedTo`.
 
 ## 2. Shared Components and UI Patterns
