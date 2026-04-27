@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_STORAGE_FOLDER = os.environ.get('DOCTRACK_STORAGE_FOLDER', 'DocTrack Files')
 LEGACY_STORAGE_ROOT = 'D:\\'
+PRIMARY_STORAGE_ROOT = os.environ.get('DOCTRACK_STORAGE_ROOT_PRIMARY', '').strip()
+FALLBACK_STORAGE_ROOT = os.environ.get('DOCTRACK_STORAGE_ROOT_FALLBACK', LEGACY_STORAGE_ROOT).strip() or LEGACY_STORAGE_ROOT
 MAX_COMPLETION_PROOF_BYTES = 25 * 1024 * 1024
 
 
@@ -30,6 +32,64 @@ def _resolve_max_scan_upload_bytes():
 MAX_SCAN_UPLOAD_BYTES = _resolve_max_scan_upload_bytes()
 
 
+def _resolve_onedrive_root():
+    configured = os.environ.get('DOCTRACK_ONEDRIVE_ROOT', '').strip()
+    if configured:
+        return configured
+
+    for env_name in ('OneDriveCommercial', 'OneDriveConsumer', 'OneDrive', 'ONEDRIVE'):
+        candidate = os.environ.get(env_name, '').strip()
+        if candidate:
+            return candidate
+
+    user_profile = os.environ.get('USERPROFILE', '').strip()
+    if user_profile:
+        return os.path.join(user_profile, 'OneDrive')
+
+    return ''
+
+
+def _unique_storage_roots(candidates):
+    unique = []
+    seen = set()
+
+    for root in candidates:
+        clean = str(root or '').strip()
+        if not clean:
+            continue
+
+        normalized = os.path.normcase(os.path.normpath(clean))
+        if normalized in seen:
+            continue
+
+        seen.add(normalized)
+        unique.append(clean)
+
+    return unique
+
+
+def _candidate_storage_roots():
+    primary = PRIMARY_STORAGE_ROOT or _resolve_onedrive_root()
+    return _unique_storage_roots([primary, FALLBACK_STORAGE_ROOT, LEGACY_STORAGE_ROOT])
+
+
+def _select_storage_base_root():
+    candidates = _candidate_storage_roots()
+    if not candidates:
+        return LEGACY_STORAGE_ROOT
+
+    for index, candidate in enumerate(candidates):
+        if index == len(candidates) - 1:
+            return candidate
+
+        if os.path.isdir(candidate):
+            return candidate
+
+        logger.info('Storage root unavailable, trying fallback root: %s', candidate)
+
+    return candidates[-1]
+
+
 def sanitize_storage_folder(folder_name):
     raw = (folder_name or '').strip()
     if not raw:
@@ -40,9 +100,37 @@ def sanitize_storage_folder(folder_name):
     return safe or DEFAULT_STORAGE_FOLDER
 
 
+def get_storage_root_candidates(folder_name=None):
+    resolved_folder = sanitize_storage_folder(folder_name)
+    candidates = []
+
+    for index, base_root in enumerate(_candidate_storage_roots()):
+        storage_root = os.path.join(base_root, resolved_folder)
+        candidates.append({
+            'index': index,
+            'base_root': base_root,
+            'storage_root': storage_root,
+            'storage_folder': resolved_folder,
+            'fallback_used': index > 0,
+        })
+
+    if not candidates:
+        storage_root = os.path.join(LEGACY_STORAGE_ROOT, resolved_folder)
+        candidates.append({
+            'index': 0,
+            'base_root': LEGACY_STORAGE_ROOT,
+            'storage_root': storage_root,
+            'storage_folder': resolved_folder,
+            'fallback_used': False,
+        })
+
+    return candidates
+
+
 def get_storage_root(folder_name=None):
     resolved_folder = sanitize_storage_folder(folder_name)
-    return os.path.join(LEGACY_STORAGE_ROOT, resolved_folder), resolved_folder
+    base_root = _select_storage_base_root()
+    return os.path.join(base_root, resolved_folder), resolved_folder
 
 
 def normalize_optional_date(value, field_name):
@@ -172,14 +260,14 @@ def build_document_folder_name(tracking_number, subject=''):
     if not safe_subject:
         return tracking
 
-    max_subject_length = max(20, 150 - len(tracking) - 3)
+    max_subject_length = max(20, 150 - len(tracking) - 1)
     if len(safe_subject) > max_subject_length:
         safe_subject = safe_subject[:max_subject_length].rstrip(' .')
 
     if not safe_subject:
         return tracking
 
-    return f'{tracking}.[{safe_subject}]'
+    return f'{tracking}.{safe_subject}'
 
 
 def infer_extension_from_data_url(header):
@@ -530,16 +618,10 @@ def save_completion_proof(doc_id):
     if len(file_data) > MAX_COMPLETION_PROOF_BYTES:
         return jsonify({'error': 'Completion proof file is too large (max 25MB)'}), 400
 
-    storage_root, storage_folder = get_storage_root(data.get('storageFolder'))
+    storage_candidates = get_storage_root_candidates(data.get('storageFolder'))
     tracking_number = normalize_string(doc.tracking_number)
     if not tracking_number:
         return jsonify({'error': 'Document tracking number is missing'}), 500
-
-    target_dir = os.path.join(storage_root, tracking_number)
-    try:
-        os.makedirs(target_dir, exist_ok=True)
-    except Exception as exc:
-        return jsonify({'error': f'Failed to create completion-proof directory: {str(exc)}'}), 500
 
     safe_original = sanitize_filename(original_name)
     _base_name, extension = os.path.splitext(safe_original)
@@ -550,28 +632,59 @@ def save_completion_proof(doc_id):
     timestamp = datetime.utcnow().strftime('%Y%m%d-%H%M%S')
     unique_suffix = uuid.uuid4().hex[:8]
     saved_name = f'completion-proof-{timestamp}-{unique_suffix}{extension}'
-    file_path = os.path.join(target_dir, saved_name)
+    write_errors = []
 
-    try:
-        with open(file_path, 'wb') as handle:
-            handle.write(file_data)
-    except Exception as exc:
-        return jsonify({'error': f'Failed to save completion proof: {str(exc)}'}), 500
+    for candidate in storage_candidates:
+        storage_root = candidate['storage_root']
+        storage_folder = candidate['storage_folder']
+        base_root = candidate['base_root']
+        fallback_used = candidate['fallback_used']
 
-    publish_event('documents-updated', {
-        'docId': doc.id,
-        'trackingNumber': tracking_number,
-        'action': 'completion-proof-uploaded',
-    })
+        target_dir = os.path.join(storage_root, tracking_number)
+        file_path = os.path.join(target_dir, saved_name)
 
-    return jsonify({
-        'message': 'Completion proof saved successfully',
-        'fileName': saved_name,
-        'originalName': safe_original or original_name,
-        'fileSize': len(file_data),
-        'trackingNumber': tracking_number,
-        'storageFolder': storage_folder,
-    }), 200
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            with open(file_path, 'wb') as handle:
+                handle.write(file_data)
+        except Exception as exc:
+            if os.path.isfile(file_path):
+                try:
+                    os.remove(file_path)
+                except OSError:
+                    pass
+
+            logger.warning(
+                'Completion proof save failed on storage root %s: %s',
+                base_root,
+                exc,
+            )
+            write_errors.append(str(exc))
+            continue
+
+        publish_event('documents-updated', {
+            'docId': doc.id,
+            'trackingNumber': tracking_number,
+            'action': 'completion-proof-uploaded',
+        })
+
+        return jsonify({
+            'message': 'Completion proof saved successfully',
+            'fileName': saved_name,
+            'originalName': safe_original or original_name,
+            'fileSize': len(file_data),
+            'trackingNumber': tracking_number,
+            'storageRoot': storage_root,
+            'storageRootUsed': base_root,
+            'storageFallbackUsed': fallback_used,
+            'storageFolder': storage_folder,
+        }), 200
+
+    logger.error(
+        'Completion proof save failed across all storage roots',
+        extra={'doc_id': doc_id, 'tracking_number': tracking_number, 'error_count': len(write_errors)},
+    )
+    return jsonify({'error': 'Failed to save completion proof in configured storage roots'}), 500
 
 
 @documents_bp.route('/<string:tracking_number>/files/upload-original', methods=['POST'])
@@ -607,42 +720,68 @@ def upload_original_document_file(tracking_number):
     if ext not in allowed_ext:
         return jsonify({'error': f'Unsupported file type for original upload: {ext or "unknown"}'}), 400
 
-    storage_root, storage_folder = get_storage_root(request.form.get('storageFolder'))
-    target_dir = os.path.join(storage_root, tracking_number)
-
-    try:
-        os.makedirs(target_dir, exist_ok=True)
-    except Exception as exc:
-        return jsonify({'error': f'Failed to create directory {target_dir}: {str(exc)}'}), 500
-
     target_name = f'scanned_document{ext}'
-    file_path = os.path.join(target_dir, target_name)
-
     try:
-        upload.save(file_path)
-        actual_size = os.path.getsize(file_path)
-        if actual_size > MAX_SCAN_UPLOAD_BYTES:
-            os.remove(file_path)
-            return jsonify({
-                'error': f'Uploaded file is too large. Max allowed is {MAX_SCAN_UPLOAD_BYTES // (1024 * 1024)} MB.'
-            }), 413
+        file_data = upload.read()
     except Exception as exc:
-        if os.path.isfile(file_path):
-            try:
-                os.remove(file_path)
-            except OSError:
-                pass
-        return jsonify({'error': f'Failed to save uploaded original: {str(exc)}'}), 500
+        return jsonify({'error': f'Failed to read uploaded file: {str(exc)}'}), 400
 
-    return jsonify({
-        'message': 'Original scanned file saved successfully',
-        'directory': target_dir,
-        'storageRoot': storage_root,
-        'storageFolder': storage_folder,
-        'fileName': target_name,
-        'originalName': safe_original,
-        'fileSize': os.path.getsize(file_path),
-    }), 200
+    if not file_data:
+        return jsonify({'error': 'Uploaded file is empty'}), 400
+
+    if len(file_data) > MAX_SCAN_UPLOAD_BYTES:
+        return jsonify({
+            'error': f'Uploaded file is too large. Max allowed is {MAX_SCAN_UPLOAD_BYTES // (1024 * 1024)} MB.'
+        }), 413
+
+    storage_candidates = get_storage_root_candidates(request.form.get('storageFolder'))
+    write_errors = []
+
+    for candidate in storage_candidates:
+        storage_root = candidate['storage_root']
+        storage_folder = candidate['storage_folder']
+        base_root = candidate['base_root']
+        fallback_used = candidate['fallback_used']
+
+        target_dir = os.path.join(storage_root, tracking_number)
+        file_path = os.path.join(target_dir, target_name)
+
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            with open(file_path, 'wb') as handle:
+                handle.write(file_data)
+        except Exception as exc:
+            if os.path.isfile(file_path):
+                try:
+                    os.remove(file_path)
+                except OSError:
+                    pass
+
+            logger.warning(
+                'Original upload save failed on storage root %s: %s',
+                base_root,
+                exc,
+            )
+            write_errors.append(str(exc))
+            continue
+
+        return jsonify({
+            'message': 'Original scanned file saved successfully',
+            'directory': target_dir,
+            'storageRoot': storage_root,
+            'storageRootUsed': base_root,
+            'storageFallbackUsed': fallback_used,
+            'storageFolder': storage_folder,
+            'fileName': target_name,
+            'originalName': safe_original,
+            'fileSize': len(file_data),
+        }), 200
+
+    logger.error(
+        'Original upload failed across all storage roots',
+        extra={'tracking_number': tracking_number, 'error_count': len(write_errors)},
+    )
+    return jsonify({'error': 'Failed to save uploaded original in configured storage roots'}), 500
 
 
 @documents_bp.route('/<string:tracking_number>/files', methods=['POST'])
@@ -663,63 +802,88 @@ def save_document_files(tracking_number):
 
     attachments = data['attachments']
 
-    storage_root, storage_folder = get_storage_root(data.get('storageFolder'))
     target_folder_name = build_document_folder_name(tracking_number, data.get('subject'))
-
-    # Create dedicated folder per control/reference number.
-    target_dir = os.path.join(storage_root, target_folder_name)
-    
-    try:
-        os.makedirs(target_dir, exist_ok=True)
-    except Exception as e:
-        return jsonify({'error': f'Failed to create directory {target_dir}: {str(e)}'}), 500
-
-    saved_files = []
+    decoded_attachments = []
 
     for att in attachments:
         if 'dataUrl' not in att or 'name' not in att:
             continue
 
-        data_url = att['dataUrl']
+        data_url = str(att['dataUrl'])
+        if ',' not in data_url:
+            continue
 
-        # Parse the base64 data URL
-        # Format: data:image/png;base64,iVBORw0KGgo...
-        if ',' in data_url:
-            header, encoded = data_url.split(',', 1)
-            try:
-                # Decode the base64 string
-                file_data = base64.b64decode(encoded)
-                
-                # Determine correct target name
-                target_name = att['name']
-                if att.get('kind') == 'original':
-                    ext = os.path.splitext(att['name'])[1]
-                    if not ext:
-                        ext = '.pdf'
-                    target_name = f"scanned_document{ext}"
-                elif att.get('kind') == 'stamped-image':
-                    target_name = f"{tracking_number}.png"
-                elif att.get('kind') == 'stamped-pdf':
-                    target_name = f"{tracking_number}.pdf"
+        _header, encoded = data_url.split(',', 1)
+        try:
+            file_data = base64.b64decode(encoded)
+        except Exception:
+            continue
 
+        target_name = att['name']
+        if att.get('kind') == 'original':
+            ext = os.path.splitext(att['name'])[1]
+            if not ext:
+                ext = '.pdf'
+            target_name = f"scanned_document{ext}"
+        elif att.get('kind') == 'stamped-image':
+            target_name = f"{tracking_number}.png"
+        elif att.get('kind') == 'stamped-pdf':
+            target_name = f"{tracking_number}.pdf"
+
+        decoded_attachments.append((target_name, file_data, att['name']))
+
+    storage_candidates = get_storage_root_candidates(data.get('storageFolder'))
+    write_errors = []
+
+    for candidate in storage_candidates:
+        storage_root = candidate['storage_root']
+        storage_folder = candidate['storage_folder']
+        base_root = candidate['base_root']
+        fallback_used = candidate['fallback_used']
+
+        target_dir = os.path.join(storage_root, target_folder_name)
+        saved_files = []
+
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+
+            for target_name, file_data, _source_name in decoded_attachments:
                 file_path = os.path.join(target_dir, target_name)
-
-                with open(file_path, 'wb') as f:
-                    f.write(file_data)
-
+                with open(file_path, 'wb') as handle:
+                    handle.write(file_data)
                 saved_files.append(file_path)
-            except Exception as e:
-                print(f"Error saving {att['name']}: {str(e)}")
-                continue
+        except Exception as exc:
+            for saved_path in saved_files:
+                if os.path.isfile(saved_path):
+                    try:
+                        os.remove(saved_path)
+                    except OSError:
+                        pass
 
-    return jsonify({
-        'message': 'Files saved successfully',
-        'directory': target_dir,
-        'documentFolder': target_folder_name,
-        'storageRoot': storage_root,
-        'storageFolder': storage_folder,
-        'savedConfigs': saved_files
-    }), 200
+            logger.warning(
+                'Attachment save failed on storage root %s: %s',
+                base_root,
+                exc,
+            )
+            write_errors.append(str(exc))
+            continue
+
+        return jsonify({
+            'message': 'Files saved successfully',
+            'directory': target_dir,
+            'documentFolder': target_folder_name,
+            'storageRoot': storage_root,
+            'storageRootUsed': base_root,
+            'storageFallbackUsed': fallback_used,
+            'storageFolder': storage_folder,
+            'savedConfigs': saved_files
+        }), 200
+
+    logger.error(
+        'Attachment save failed across all storage roots',
+        extra={'tracking_number': tracking_number, 'error_count': len(write_errors)},
+    )
+    return jsonify({'error': 'Failed to save files in configured storage roots'}), 500
 
 
 @documents_bp.route("/<string:tracking_number>/files/<path:filename>", methods=["GET"])
@@ -738,25 +902,37 @@ def get_document_file(tracking_number, filename):
     if not doc and normalize_string(user.role) == 'Division':
         return jsonify({'error': 'Access denied for this document file'}), 403
 
-    storage_root, _storage_folder = get_storage_root(request.args.get('storageFolder'))
-    target_dir = os.path.join(storage_root, tracking_number)
+    candidate_dirs = []
+    for candidate in get_storage_root_candidates(request.args.get('storageFolder')):
+        candidate_dirs.append(os.path.join(candidate['storage_root'], tracking_number))
 
     # Backward compatibility for files saved before dedicated-folder support.
-    if not os.path.isdir(target_dir):
-        legacy_dir = os.path.join(LEGACY_STORAGE_ROOT, tracking_number)
-        if os.path.isdir(legacy_dir):
-            target_dir = legacy_dir
+    candidate_dirs.append(os.path.join(LEGACY_STORAGE_ROOT, tracking_number))
 
-    if not os.path.isdir(target_dir):
+    seen_dirs = set()
+    found_dir = False
+
+    for target_dir in candidate_dirs:
+        normalized_dir = os.path.normcase(os.path.normpath(target_dir))
+        if normalized_dir in seen_dirs:
+            continue
+        seen_dirs.add(normalized_dir)
+
+        if not os.path.isdir(target_dir):
+            continue
+
+        found_dir = True
+        file_path = os.path.join(target_dir, filename)
+
+        # Ensure filename is safe to prevent directory traversal attacks.
+        if not os.path.commonprefix([os.path.realpath(file_path), os.path.realpath(target_dir)]) == os.path.realpath(target_dir):
+            return jsonify({"error": "Attempted directory traversal"}), 400
+
+        if os.path.isfile(file_path):
+            return send_from_directory(target_dir, filename, as_attachment=False)
+
+    if not found_dir:
         return jsonify({"error": "Document directory not found"}), 404
 
-    file_path = os.path.join(target_dir, filename)
-    if not os.path.isfile(file_path):
-        return jsonify({"error": "File not found"}), 404
-    
-    # Ensure filename is safe to prevent directory traversal attacks
-    if not os.path.commonprefix([os.path.realpath(file_path), os.path.realpath(target_dir)]) == os.path.realpath(target_dir):
-        return jsonify({"error": "Attempted directory traversal"}), 400
-
-    return send_from_directory(target_dir, filename, as_attachment=False)
+    return jsonify({"error": "File not found"}), 404
 

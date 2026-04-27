@@ -26,8 +26,10 @@ const SCAN_STEPS = [
   'Print Transmittal Slip & Sticker',
 ]
 
-const STORAGE_TARGET = (import.meta.env.VITE_STORAGE_TARGET || (import.meta.env.PROD ? 'onedrive' : 'seagate-d')).toLowerCase()
-const STORAGE_DEST_LABEL = STORAGE_TARGET === 'onedrive' ? 'OneDrive' : 'Seagate (D:)' 
+const STORAGE_TARGET = (import.meta.env.VITE_STORAGE_TARGET || 'onedrive').toLowerCase()
+const STORAGE_DEST_LABEL = STORAGE_TARGET === 'onedrive'
+  ? 'OneDrive (fallback: Seagate D:)'
+  : 'Seagate (D:)' 
 const DEFAULT_STORAGE_FOLDER = (import.meta.env.VITE_STORAGE_BASE_FOLDER || 'DocTrack Files').trim()
 
 const getCurrentDateInputValue = () => new Date().toISOString().split('T')[0]
@@ -934,11 +936,11 @@ export default function ScanRegister() {
     const safeSubject = sanitizeSubjectForFolder(subjectText)
     if (!safeSubject) return tracking
 
-    const maxSubjectLength = Math.max(20, 150 - tracking.length - 3)
+    const maxSubjectLength = Math.max(20, 150 - tracking.length - 1)
     const clipped = safeSubject.slice(0, maxSubjectLength).replace(/[.\s]+$/g, '')
     if (!clipped) return tracking
 
-    return `${tracking}.[${clipped}]`
+    return `${tracking}.${clipped}`
   }
 
   const pickExternalSaveFolder = async () => {
@@ -1034,12 +1036,18 @@ export default function ScanRegister() {
       }
 
       const result = await response.json()
-      console.log('Files saved to D: drive:', result.directory)
+      console.info('[STORAGE] Files saved', {
+        directory: result.directory,
+        storageRootUsed: result.storageRootUsed || result.storageRoot || '',
+        storageFallbackUsed: !!result.storageFallbackUsed,
+      })
       return {
         ok: true,
         directory: result.directory,
         documentFolder: result.documentFolder || buildExternalDocumentFolderName(controlNumber, subjectText),
         storageFolder: result.storageFolder || requestedStorageFolder,
+        storageRootUsed: result.storageRootUsed || result.storageRoot || '',
+        storageFallbackUsed: !!result.storageFallbackUsed,
       }
     } catch (err) {
       console.error('Error saving files via backend:', err)
@@ -1872,12 +1880,6 @@ export default function ScanRegister() {
                         value={receiveInfo.receivedTime}
                         onChange={e => setReceiveInfo(prev => ({ ...prev, receivedTime: e.target.value }))}
                       />
-                    </Form.Group>
-                  </Col>
-                  <Col md={12}>
-                    <Form.Group>
-                      <Form.Label className="fw-semibold" style={{ fontSize: 13 }}>Comments / Instructions</Form.Label>
-                      <Form.Control as="textarea" rows={5} placeholder="Optional" value={extracted.remarks} onChange={e => handleChange('remarks', e.target.value)} />
                     </Form.Group>
                   </Col>
                 </Row>
