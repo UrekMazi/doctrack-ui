@@ -3,6 +3,8 @@ export const WORKFLOW_STATUS = {
   OPM_INITIAL_REVIEW: 'For OPM Assistant Review',
   PM_REVIEW: 'Endorsed to OPM',
   ROUTED_CONCERNED: 'Routed to Division',
+  PENDING_OPM_FINALIZATION: 'Pending OPM Finalization',
+  REROUTED: 'Re-routed by OPM',
   RECEIVED_ACKNOWLEDGED: 'Received & Acknowledged',
 }
 
@@ -10,6 +12,8 @@ export const STATUS_DISPLAY_LABELS = {
   [WORKFLOW_STATUS.OPM_INITIAL_REVIEW]: 'Endorsed to OPM',
   [WORKFLOW_STATUS.PM_REVIEW]: 'Under PM Review/Evaluation',
   [WORKFLOW_STATUS.ROUTED_CONCERNED]: 'Routed to RC/s Concerned',
+  [WORKFLOW_STATUS.PENDING_OPM_FINALIZATION]: 'OPM Outgoing Review',
+  [WORKFLOW_STATUS.REROUTED]: 'Re-routed by OPM',
 }
 
 export function getStatusDisplayLabel(status) {

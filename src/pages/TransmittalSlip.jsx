@@ -19,6 +19,16 @@ const DIVISION_CODE_MAP = {
   ESD: 'ESD',
 }
 
+const ACTION_SPLIT_REGEX = /\s*[;|]\s*/
+
+const LEGACY_TRANSMITTAL_ACTION_MAP = {
+  'For review and appropriate action': 'As appropriate',
+  'For information': 'For information/reference/file',
+  'For approval / signature': 'For evaluation/review',
+  'For compliance': 'For monitoring',
+  'For comment / recommendation': 'Give comments/recommendations',
+}
+
 function mapDivisionToCode(value) {
   const raw = String(value || '').trim()
   if (!raw) return null
@@ -54,6 +64,21 @@ function getMainDivisionCode(doc, selectedDivisionCodes) {
   return mapped
 }
 
+function normalizeSlipActions(value) {
+  if (!value) return new Set()
+
+  const rawParts = Array.isArray(value)
+    ? value
+    : String(value || '').split(ACTION_SPLIT_REGEX)
+
+  const normalized = rawParts
+    .map((entry) => LEGACY_TRANSMITTAL_ACTION_MAP[String(entry || '').trim()] || String(entry || '').trim())
+    .filter(Boolean)
+    .map((entry) => entry.toUpperCase())
+
+  return new Set(normalized)
+}
+
 export default function TransmittalSlip() {
   const { id } = useParams()
   const { documents } = useDocuments()
@@ -78,6 +103,8 @@ export default function TransmittalSlip() {
       </div>
     )
   }
+
+  const actionSet = normalizeSlipActions(doc.action)
 
   const slipStyle = {
     width: '4.25in',
@@ -172,7 +199,7 @@ export default function TransmittalSlip() {
               {['AS APPROPRIATE', 'NOTE', 'RETURN', 'FORWARD', 'FILE'].map(act => (
                 <label key={act} style={{ display: 'flex', alignItems: 'center', gap: 2, lineHeight: 1.5 }}>
                   <span style={{ width: 8, height: 8, border: '1px solid #000', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: typeScale.tiny, fontWeight: 700, flexShrink: 0, background: '#fff', color: '#000' }}>
-                    {doc.action === act ? '✓' : ''}
+                    {actionSet.has(act) ? '✓' : ''}
                   </span>
                   <span>{act}</span>
                 </label>
@@ -184,7 +211,7 @@ export default function TransmittalSlip() {
           <div style={{ display: 'flex', borderBottom: '1px solid #000' }}>
             <div style={{ flex: 1, padding: '2px 4px', borderRight: '1px solid #000', display: 'flex', alignItems: 'center', gap: 2 }}>
               <span style={{ width: 8, height: 8, border: '1px solid #000', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: typeScale.tiny, fontWeight: 700, flexShrink: 0, background: '#fff', color: '#000' }}>
-                {doc.action === 'PREPARE REPLY' ? '✓' : ''}
+                {actionSet.has('PREPARE REPLY') ? '✓' : ''}
               </span>
               <span style={{ fontSize: 7.8, fontWeight: 600 }}>PREPARE REPLY</span>
             </div>

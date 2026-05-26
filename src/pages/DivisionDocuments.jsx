@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { Row, Col, Form, Button } from 'react-bootstrap'
 import StatusBadge from '../components/StatusBadge'
 import { useDocuments } from '../context/DocumentContext'
+import { WORKFLOW_STATUS } from '../utils/workflowLabels'
 
 export default function DivisionDocuments({ currentUser }) {
   const { documents } = useDocuments()
@@ -41,8 +42,10 @@ export default function DivisionDocuments({ currentUser }) {
     (isRoutedToUserDivision(doc) || doc.senderAddress === userDivision) &&
     isVisibleToCurrentPersonnel(doc)
   ).filter(doc =>
-    doc.status === 'Routed to Division' ||
-    doc.status === 'Received & Acknowledged'
+    doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED ||
+    doc.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED ||
+    doc.status === WORKFLOW_STATUS.REROUTED ||
+    doc.status === WORKFLOW_STATUS.PENDING_OPM_FINALIZATION
   )
 
   const filtered = divDocs.filter(doc => {
@@ -89,6 +92,14 @@ export default function DivisionDocuments({ currentUser }) {
     return inferred.filter((entry, idx, arr) => arr.findIndex((e) => e.division === entry.division) === idx)
   }
 
+  const isReceiptAcknowledged = (entry) => Boolean(entry?.verifiedAt || entry?.acknowledgedAt)
+  const isReceiptViewed = (entry) => Boolean(entry?.viewedAt || entry?.viewedBy || entry?.viewed)
+  const isDivisionReceiptSatisfied = (division, receipt, mainDivision) => {
+    const isMainDivision = normalizeText(division) === normalizeText(mainDivision)
+    if (isMainDivision) return isReceiptAcknowledged(receipt)
+    return isReceiptViewed(receipt) || isReceiptAcknowledged(receipt)
+  }
+
   return (
     <div className="division-page">
       <div className="page-header division-header">
@@ -111,8 +122,10 @@ export default function DivisionDocuments({ currentUser }) {
             <Col md={2}>
               <Form.Select size="sm" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
                 <option value="">All Statuses</option>
-                <option value="Routed to Division">Routed to RC/s Concerned</option>
-                <option value="Received & Acknowledged">Received & Acknowledged</option>
+                <option value={WORKFLOW_STATUS.ROUTED_CONCERNED}>Routed to RC/s Concerned</option>
+                <option value={WORKFLOW_STATUS.PENDING_OPM_FINALIZATION}>OPM Outgoing Review</option>
+                <option value={WORKFLOW_STATUS.REROUTED}>Re-routed by OPM</option>
+                <option value={WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED}>Received & Acknowledged</option>
               </Form.Select>
             </Col>
             <Col md={2}>
@@ -152,13 +165,32 @@ export default function DivisionDocuments({ currentUser }) {
                   (() => {
                     const routedDivisions = getRoutedDivisions(doc)
                     const receipts = getExistingDivisionReceipts(doc)
+                    const mainDivisionRaw = doc.oprDivision || doc.mainDivision || doc.targetDivision || ''
+                    const isUserMainDivision = normalizeText(userDivision) === normalizeText(mainDivisionRaw)
+                    const receivedCount = routedDivisions.length > 0
+                      ? routedDivisions.filter((division) => {
+                          const receipt = receipts.find((entry) => entry.division === division)
+                          return isDivisionReceiptSatisfied(division, receipt, mainDivisionRaw)
+                        }).length
+                      : 0
                     const myReceipt = receipts.find((entry) => entry.division === userDivision)
+                    const hasAcknowledged = Boolean(myReceipt && isReceiptAcknowledged(myReceipt))
+                    const hasViewed = Boolean(myReceipt && (isReceiptViewed(myReceipt) || hasAcknowledged))
+                    const showQrAction = isUserMainDivision && !hasAcknowledged && (doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED || doc.status === WORKFLOW_STATUS.REROUTED)
+                    const showViewed = !isUserMainDivision && !hasAcknowledged && hasViewed
+                    const isLocked = doc.status === WORKFLOW_STATUS.PENDING_OPM_FINALIZATION
                     return (
                   <tr key={doc.id} className="division-row">
                     <td>
-                      <Link to={`/document/${doc.id}`} className="tracking-number text-decoration-none">
-                        {doc.trackingNumber}
-                      </Link>
+                      {isLocked ? (
+                        <span className="tracking-number text-muted">
+                          <i className="bi bi-lock-fill me-1"></i>{doc.trackingNumber}
+                        </span>
+                      ) : (
+                        <Link to={`/document/${doc.id}`} className="tracking-number text-decoration-none">
+                          {doc.trackingNumber}
+                        </Link>
+                      )}
                     </td>
                     <td className="div-cell-subject" title={doc.subject}>
                       {doc.subject}
@@ -171,25 +203,38 @@ export default function DivisionDocuments({ currentUser }) {
                     <td className="div-cell-date">{doc.dateReceived}</td>
                     <td className="div-cell-actions">
                       <div className="division-actions-row division-row-actions">
-                        <Link to={`/document/${doc.id}`} className="action-btn" title="View Details" aria-label="View Details">
-                          <i className="bi bi-eye"></i>
-                        </Link>
-                        {!myReceipt && doc.status === 'Routed to Division' && (
+                        {isLocked ? (
+                          <span className="division-action-state text-muted" title="Pending OPM finalization">
+                            <i className="bi bi-lock-fill"></i>
+                            Locked
+                          </span>
+                        ) : (
+                          <Link to={`/document/${doc.id}`} className="action-btn" title="View Details" aria-label="View Details">
+                            <i className="bi bi-eye"></i>
+                          </Link>
+                        )}
+                        {showQrAction && (
                           <Link to={`/document/${doc.id}`} className="action-btn" title="Scan Transmittal QR" aria-label="Scan Transmittal QR">
                             <i className="bi bi-camera-video"></i>
                           </Link>
                         )}
-                        {myReceipt && (
+                        {hasAcknowledged && (
                           <span className="division-action-state text-success">
                             <i className="bi bi-check-circle-fill"></i>
-                            Received
+                            Acknowledged
+                          </span>
+                        )}
+                        {showViewed && (
+                          <span className="division-action-state text-primary">
+                            <i className="bi bi-eye-fill"></i>
+                            Viewed
                           </span>
                         )}
                       </div>
-                      {!myReceipt && routedDivisions.length > 1 && (
+                      {!hasAcknowledged && routedDivisions.length > 1 && (
                         <div className="division-action-meta">
                           <i className="bi bi-diagram-3"></i>
-                          {receipts.length}/{routedDivisions.length} received
+                          {receivedCount}/{routedDivisions.length} received
                         </div>
                       )}
                     </td>

@@ -2,7 +2,7 @@ import { useParams, Link } from 'react-router-dom'
 import { useEffect, useRef, useState } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { useReactToPrint } from 'react-to-print'
-import { Row, Col, Button, Form, Modal } from 'react-bootstrap'
+import { Row, Col, Button, Form, Modal, Dropdown } from 'react-bootstrap'
 import { Html5Qrcode } from 'html5-qrcode'
 import * as pdfjsLib from 'pdfjs-dist'
 import toast from 'react-hot-toast'
@@ -14,6 +14,14 @@ import { useDocuments } from '../context/DocumentContext'
 import { inferDocumentDirection } from '../utils/documentDirection'
 import { openIncomingTransmittalPrintWindow } from '../utils/incomingTransmittalPrint'
 import { WORKFLOW_STATUS, getStatusDisplayLabel } from '../utils/workflowLabels'
+import {
+  TAG_PRESETS,
+  DEFAULT_CUSTOM_TAG_COLOR,
+  buildRouteTags,
+  normalizeRouteTags,
+  splitRouteTags,
+  getTagClassName,
+} from '../utils/docTags'
 import {
   OPM_DIVISION,
   getDivisionPositionOptionsFromCatalog,
@@ -53,6 +61,8 @@ const TRANSMITTAL_ACTION_OPTIONS = [
   'For coordination',
 ]
 
+const ACTION_SPLIT_REGEX = /\s*[;|]\s*/
+
 const LEGACY_TRANSMITTAL_ACTION_MAP = {
   'For review and appropriate action': 'As appropriate',
   'For information': 'For information/reference/file',
@@ -61,11 +71,57 @@ const LEGACY_TRANSMITTAL_ACTION_MAP = {
   'For comment / recommendation': 'Give comments/recommendations',
 }
 
-function normalizeTransmittalAction(value) {
+const MAIN_OPR_VIEW_TTL_MS = 6000
+
+function normalizeTransmittalActions(value) {
+  if (Array.isArray(value)) {
+    const normalized = value
+      .map((entry) => LEGACY_TRANSMITTAL_ACTION_MAP[String(entry || '').trim()] || String(entry || '').trim())
+      .filter((entry) => TRANSMITTAL_ACTION_OPTIONS.includes(entry))
+    return normalized.length ? Array.from(new Set(normalized)) : [TRANSMITTAL_ACTION_OPTIONS[0]]
+  }
+
   const raw = String(value || '').trim()
-  if (!raw) return TRANSMITTAL_ACTION_OPTIONS[0]
-  const normalized = LEGACY_TRANSMITTAL_ACTION_MAP[raw] || raw
-  return TRANSMITTAL_ACTION_OPTIONS.includes(normalized) ? normalized : TRANSMITTAL_ACTION_OPTIONS[0]
+  if (!raw) return [TRANSMITTAL_ACTION_OPTIONS[0]]
+
+  const parts = raw.split(ACTION_SPLIT_REGEX).map((entry) => entry.trim()).filter(Boolean)
+  const normalized = parts
+    .map((entry) => LEGACY_TRANSMITTAL_ACTION_MAP[entry] || entry)
+    .filter((entry) => TRANSMITTAL_ACTION_OPTIONS.includes(entry))
+
+  return normalized.length ? Array.from(new Set(normalized)) : [TRANSMITTAL_ACTION_OPTIONS[0]]
+}
+
+function getRoutingMethodFromAction(action) {
+  const normalized = String(action || '').toLowerCase()
+  if (normalized.includes('physical + digital')) return 'both'
+  if (normalized.includes('digital assignment') || normalized.includes('digital only')) return 'digital'
+  return ''
+}
+
+function inferInitialRoutingMethod(doc) {
+  const history = Array.isArray(doc?.routingHistory) ? doc.routingHistory : []
+  let actionToUse = ''
+
+  for (const entry of history) {
+    const action = String(entry?.action || '')
+    if (/routed by pm .*(pending opm finalization|opm outgoing review)/i.test(action)) {
+      actionToUse = action
+      break
+    }
+  }
+
+  if (!actionToUse) {
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+      const action = String(history[i]?.action || '')
+      if (/(pending opm finalization|opm outgoing review)/i.test(action)) {
+        actionToUse = action
+        break
+      }
+    }
+  }
+
+  return getRoutingMethodFromAction(actionToUse) || 'both'
 }
 
 const readFileAsDataUrl = (file) => new Promise((resolve, reject) => {
@@ -124,7 +180,7 @@ function getMainDivisionCode(doc, selectedDivisionCodes) {
 }
 
 function getRoutedDivisions(doc) {
-  if (!(doc.status === 'Routed to Division' || doc.status === 'Received & Acknowledged')) {
+  if (!(doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED || doc.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED || doc.status === WORKFLOW_STATUS.REROUTED || doc.status === WORKFLOW_STATUS.PENDING_OPM_FINALIZATION || doc.status === 'Completed')) {
     return []
   }
   const raw = Array.isArray(doc.targetDivisions) && doc.targetDivisions.length > 0
@@ -156,6 +212,14 @@ function getDivisionReceipts(doc) {
     .filter((entry) => routed.includes(entry.division))
 
   return inferred.filter((entry, idx, arr) => arr.findIndex((e) => e.division === entry.division) === idx)
+}
+
+function isReceiptAcknowledged(entry) {
+  return Boolean(entry?.verifiedAt || entry?.acknowledgedAt)
+}
+
+function isReceiptViewed(entry) {
+  return Boolean(entry?.viewedAt || entry?.viewedBy || entry?.viewed)
 }
 
 function getRoleLabel(currentUser) {
@@ -209,7 +273,18 @@ export default function DocumentDetail({ currentUser }) {
   }
 
   const isIncoming = inferDocumentDirection(doc) === 'Incoming'
+  const isDivisionLocked = isIncoming && currentUser?.systemRole === 'Division' && doc.status === WORKFLOW_STATUS.PENDING_OPM_FINALIZATION
   const history = doc.routingHistory || []
+    if (isDivisionLocked) {
+      return (
+        <div className="empty-state">
+          <i className="bi bi-lock-fill d-block"></i>
+          <h5>OPM Outgoing Review</h5>
+          <p>Divisions can view this document after the OPM Secretary finalizes the PM routing.</p>
+          <Link to="/division-documents" className="btn btn-outline-primary">Back to Division Queue</Link>
+        </div>
+      )
+    }
   const transmittalRef = useRef(null)
   const externalDirRef = useRef(null)
   const [externalDirLabel, setExternalDirLabel] = useState('Not linked')
@@ -227,6 +302,16 @@ export default function DocumentDetail({ currentUser }) {
   // OPM Assistant UI States
   const isOpmAssistant = currentUser?.systemRole === 'OPM Assistant'
   const isForOpmReview = doc?.status === WORKFLOW_STATUS.OPM_INITIAL_REVIEW
+  const canOpmReroute = isIncoming && isOpmAssistant && (
+    doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED ||
+    doc.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED ||
+    doc.status === WORKFLOW_STATUS.REROUTED
+  )
+  const canOpmFinalize = isIncoming && isOpmAssistant && doc.status === WORKFLOW_STATUS.PENDING_OPM_FINALIZATION
+  const canOpmEditOutgoing = isIncoming && isOpmAssistant && (
+    doc.status === WORKFLOW_STATUS.PENDING_OPM_FINALIZATION ||
+    doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED
+  )
   const [digitalAcknowledgeTyped, setDigitalAcknowledgeTyped] = useState('')
   const [isQrScannedOpm, setIsQrScannedOpm] = useState(false)
   const [showAssistantEndorseModal, setShowAssistantEndorseModal] = useState(false)
@@ -239,12 +324,18 @@ export default function DocumentDetail({ currentUser }) {
   const [showPMRoutingModal, setShowPMRoutingModal] = useState(false)
   const [mainRouteDivision, setMainRouteDivision] = useState('')
   const [routeToDivisions, setRouteToDivisions] = useState([])
-  const [routeAction, setRouteAction] = useState(TRANSMITTAL_ACTION_OPTIONS[0])
+  const [routeActions, setRouteActions] = useState([TRANSMITTAL_ACTION_OPTIONS[0]])
   const [routeInstructions, setRouteInstructions] = useState('')
+  const [routeTagKeys, setRouteTagKeys] = useState([])
+  const [customTagLabel, setCustomTagLabel] = useState('')
+  const [customTagColor, setCustomTagColor] = useState(DEFAULT_CUSTOM_TAG_COLOR)
+  const [routeDeliveryMethod, setRouteDeliveryMethod] = useState('both')
   const [routeAssignmentDraft, setRouteAssignmentDraft] = useState({})
+  const [routingMode, setRoutingMode] = useState('pm')
   const [divisionPositionCatalog, setDivisionPositionCatalog] = useState({})
   const [opmAssignee, setOpmAssignee] = useState('')
   const [routingToDivision, setRoutingToDivision] = useState(false)
+  const [finalizingRoute, setFinalizingRoute] = useState(false)
   const [showDelegateModal, setShowDelegateModal] = useState(false)
   const [selectedPersonnel, setSelectedPersonnel] = useState('')
   const [dmInstructions, setDmInstructions] = useState('')
@@ -255,26 +346,48 @@ export default function DocumentDetail({ currentUser }) {
   const [completingTask, setCompletingTask] = useState(false)
   const qrScannerRef = useRef(null)
   const qrScannerElementId = 'doc-detail-qr-reader'
-  const shouldShowRoutingMarks = doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED || doc.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED
+  const shouldShowRoutingMarks = doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED || doc.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED || doc.status === WORKFLOW_STATUS.REROUTED || doc.status === WORKFLOW_STATUS.PENDING_OPM_FINALIZATION
   const selectedDivisionCodes = shouldShowRoutingMarks ? getSelectedDivisionCodes(doc) : []
   const mainDivisionCode = shouldShowRoutingMarks ? getMainDivisionCode(doc, selectedDivisionCodes) : ''
   const routedDivisions = getRoutedDivisions(doc)
   const divisionReceipts = getDivisionReceipts(doc)
   const mainDivision = doc.oprDivision || doc.mainDivision || doc.targetDivision || ''
+  const mainOprReceipt = divisionReceipts.find((entry) => entry.division === mainDivision)
+  const isMainOprAcknowledged = isReceiptAcknowledged(mainOprReceipt)
   const orderedDivisionList = [
     ...((mainDivision && routedDivisions.includes(mainDivision)) ? [mainDivision] : []),
     ...routedDivisions.filter((d) => d !== mainDivision),
   ]
-  const fullyReceivedByAllDivisions = orderedDivisionList.length > 0
-    ? orderedDivisionList.every((division) => divisionReceipts.some((entry) => entry.division === division))
-    : false
   const normalizeDivisionValue = (value) => String(value || '').trim().toLowerCase()
+  const normalizedMainDivision = normalizeDivisionValue(mainDivision)
+  const isDivisionReceiptSatisfied = (division) => {
+    const receipt = divisionReceipts.find((entry) => entry.division === division)
+    const isMainDivision = normalizeDivisionValue(division) === normalizedMainDivision
+    if (isMainDivision) return isReceiptAcknowledged(receipt)
+    return isReceiptViewed(receipt) || isReceiptAcknowledged(receipt)
+  }
+  const fullyReceivedByAllDivisions = orderedDivisionList.length > 0
+    ? orderedDivisionList.every((division) => isDivisionReceiptSatisfied(division))
+    : false
+  const isTaskCompleted = doc.status === 'Completed'
+  const mainOprViewingAtRaw = String(doc.mainOprViewingAt || '').trim()
+  const mainOprViewingAtMs = mainOprViewingAtRaw ? Date.parse(mainOprViewingAtRaw) : Number.NaN
+  const isMainOprViewingActive = Number.isFinite(mainOprViewingAtMs)
+    ? (Date.now() - mainOprViewingAtMs) < MAIN_OPR_VIEW_TTL_MS
+    : false
+  const receiptHeaderLabel = isTaskCompleted
+    ? 'Completed'
+    : (fullyReceivedByAllDivisions ? 'Fully Received' : 'Waiting for Division Receipts')
+  const receiptHeaderClass = isTaskCompleted
+    ? 'bg-success-subtle text-success border border-success-subtle'
+    : (fullyReceivedByAllDivisions
+        ? 'bg-success-subtle text-success border border-success-subtle'
+        : 'bg-warning-subtle text-warning border border-warning-subtle')
   const userRole = String(currentUser?.systemRole || '').trim()
   const userDivision = String(currentUser?.division || '').trim()
   const userPosition = String(currentUser?.position || '').trim()
   const normalizedUserPosition = userPosition.toLowerCase()
   const normalizedUserDivision = normalizeDivisionValue(userDivision)
-  const normalizedMainDivision = normalizeDivisionValue(mainDivision)
   const explicitSupportingDivisions = Array.isArray(doc.supportingDivisions)
     ? doc.supportingDivisions.filter((division) => String(division || '').trim().length > 0)
     : []
@@ -304,8 +417,8 @@ export default function DocumentDetail({ currentUser }) {
     .map((division) => mapDivisionToCode(division))
     .filter(Boolean)
   const isUserInRoutedDivisionByCode = userDivisionCode ? routedDivisionCodes.includes(userDivisionCode) : false
-  const isDelegationRoutedStatus = doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED || doc.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED
-  const isCompletionRoutedStatus = doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED || doc.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED
+  const isDelegationRoutedStatus = doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED || doc.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED || doc.status === WORKFLOW_STATUS.REROUTED
+  const isCompletionRoutedStatus = doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED || doc.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED || doc.status === WORKFLOW_STATUS.REROUTED
   const divisionDelegateOptions = getDivisionPositionOptionsFromCatalog(userDivision, divisionPositionCatalog)
     .filter((position) => String(position || '').trim().toLowerCase() !== normalizedUserPosition)
   const existingAssignedPersonnel = String(doc.assignedTo || '').trim()
@@ -437,11 +550,17 @@ export default function DocumentDetail({ currentUser }) {
                   title: 'Next Action: Waiting for PM Routing',
                   text: 'OPM has forwarded this to PM. Await routing to RC/s Concerned.',
                 }
-              : doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED
+              : doc.status === WORKFLOW_STATUS.PENDING_OPM_FINALIZATION
+                ? {
+                    tone: 'info',
+                    title: 'Next Action: Await OPM Finalization',
+                    text: 'PM routing is complete. OPM will finalize before divisions can view or acknowledge.',
+                  }
+                : (doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED || doc.status === WORKFLOW_STATUS.REROUTED)
                 ? {
                     tone: 'success',
                     title: 'Next Action: Monitor Division Receipt',
-                    text: 'Handoff to division/s is complete. Wait for digital or QR acknowledgement.',
+                    text: 'Handoff to division/s is complete. Wait for transmittal QR acknowledgement.',
                   }
                 : doc.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED
                   ? {
@@ -452,7 +571,7 @@ export default function DocumentDetail({ currentUser }) {
                   : null
       )
     : null
-  const isDivisionQrReceivable = isIncoming && currentUser?.systemRole === 'Division' && doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED
+  const isDivisionQrReceivable = isIncoming && currentUser?.systemRole === 'Division' && (doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED || doc.status === WORKFLOW_STATUS.REROUTED)
   const statusNotification = doc.status === WORKFLOW_STATUS.REGISTERED
     ? {
         tone: 'secondary',
@@ -462,9 +581,15 @@ export default function DocumentDetail({ currentUser }) {
     : (doc.status === WORKFLOW_STATUS.OPM_INITIAL_REVIEW || doc.status === WORKFLOW_STATUS.PM_REVIEW)
       ? {
           tone: 'info',
-          title: 'OPM/PM Review (Digital)',
+          title: 'OPM/PM Review',
           text: 'Document is currently in OPM to PM review flow. Division QR receive starts after PM routes to RC/s Concerned.',
         }
+      : doc.status === WORKFLOW_STATUS.PENDING_OPM_FINALIZATION
+        ? {
+            tone: 'warning',
+            title: 'OPM Outgoing Review',
+            text: 'PM routing is complete. Divisions can see the document but cannot open it until OPM finalizes.',
+          }
       : null
   const routeDivisionOptions = DIVISIONS.filter((division) =>
     division !== 'Records Section'
@@ -474,6 +599,74 @@ export default function DocumentDetail({ currentUser }) {
     ...routeToDivisions.filter((division) => division !== mainRouteDivision),
   ].filter(Boolean)
   const hasOpmSelection = selectedRouteDivisions.includes(OPM_DIVISION)
+  const isOpmOutgoingEdit = routingMode === 'opm-finalize-edit' || routingMode === 'opm-outgoing-edit'
+  const routeEditorTitle = routingMode === 'opm-reroute'
+    ? 'Edit Transmittal Slip & Re-route to Division'
+    : isOpmOutgoingEdit
+      ? 'Edit OPM Outgoing (OPM Outgoing Review)'
+      : 'Edit Transmittal Slip & Route to Division'
+  const routePrimaryLabel = routingMode === 'opm-reroute'
+    ? 'Re-route (Physical + Digital)'
+    : isOpmOutgoingEdit
+      ? 'Physical + Digital'
+      : 'Route (Physical + Digital)'
+  const routeSecondaryLabel = routingMode === 'opm-reroute'
+    ? 'Re-route (Digital Only)'
+    : isOpmOutgoingEdit
+      ? 'Digital Only'
+      : 'Digital Only'
+  const draftRouteTags = buildRouteTags({
+    presetKeys: routeTagKeys,
+    customLabel: customTagLabel,
+    customColor: customTagColor,
+  })
+  const routeActionSummary = routeActions.length ? routeActions.join('; ') : ''
+  const routeActionToggleLabel = routeActions.length === 1
+    ? routeActions[0]
+    : routeActions.length > 1
+      ? `${routeActions.length} actions selected`
+      : 'Select required action(s)'
+
+  const toggleRouteTag = (tagKey) => {
+    const normalizedKey = String(tagKey || '').trim().toUpperCase()
+    if (!normalizedKey) return
+
+    setRouteTagKeys((prev) => (
+      prev.includes(normalizedKey)
+        ? prev.filter((item) => item !== normalizedKey)
+        : [...prev, normalizedKey]
+    ))
+  }
+
+  const toggleRouteAction = (option) => {
+    const normalized = String(option || '').trim()
+    if (!normalized) return
+
+    setRouteActions((prev) => {
+      const exists = prev.includes(normalized)
+      if (exists && prev.length === 1) return prev
+      return exists ? prev.filter((item) => item !== normalized) : [...prev, normalized]
+    })
+  }
+
+  const renderDocTags = (tags, className = '') => {
+    const normalized = normalizeRouteTags(tags)
+    if (normalized.length === 0) return null
+
+    return (
+      <div className={`doc-tag-group ${className}`.trim()}>
+        {normalized.map((tag) => (
+          <span
+            key={`${tag.key}-${tag.label}`}
+            className={getTagClassName(tag)}
+            style={tag.kind === 'custom' ? { backgroundColor: tag.color || DEFAULT_CUSTOM_TAG_COLOR } : undefined}
+          >
+            {tag.label}
+          </span>
+        ))}
+      </div>
+    )
+  }
   const persistedRouteAssignments = doc.routeAssignments && typeof doc.routeAssignments === 'object'
     ? doc.routeAssignments
     : {}
@@ -559,6 +752,12 @@ export default function DocumentDetail({ currentUser }) {
       : selectedAttachment?.kind === 'stamped-pdf'
         ? 'Stamped PDF'
         : (selectedAttachment?.kind || 'Attachment')
+  const selectedExternalFolderRaw = selectedAttachment?.externalFolder
+  const selectedExternalFolderName = selectedExternalFolderRaw === undefined || selectedExternalFolderRaw === null
+    ? (doc?.trackingNumber || '')
+    : String(selectedExternalFolderRaw || '').trim()
+  const selectedExternalBaseFolderName = String(selectedAttachment?.externalBaseFolder || '').trim()
+  const selectedExternalSourceLabel = [selectedExternalBaseFolderName, selectedExternalFolderName].filter(Boolean).join(' / ')
 
   useEffect(() => {
     setSelectedPdfPage(1)
@@ -617,46 +816,89 @@ export default function DocumentDetail({ currentUser }) {
     return () => revokeExternalUrls(externalFiles)
   }, [externalFiles])
 
-  const autoAckRef = useRef(false)
   useEffect(() => {
     if (!doc || !currentUser) return
-    if (isIncoming && currentUser?.systemRole === 'Division' && doc.status === 'Routed to Division' && isUserSupportingDivision) {
-      const userDivision = currentUser?.division
-      if (!userDivision) return
-      
-      const existingReceipts = Array.isArray(doc.divisionReceipts) ? doc.divisionReceipts : []
-      const hasReceived = existingReceipts.some(r => r.division === userDivision)
-      
-      if (!hasReceived && !autoAckRef.current) {
-        autoAckRef.current = true
-        // Delay slightly to ensure toast doesn't override other loading toasts
-        setTimeout(() => {
-          completeQrReceive(doc.trackingNumber, 'system')
-        }, 500)
-      }
+    if (!isIncoming || currentUser?.systemRole !== 'Division') return
+    if (!(doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED || doc.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED || doc.status === WORKFLOW_STATUS.REROUTED)) return
+    if (!(isUserMainDivision || isUserSupportingDivision || isUserInRoutedDivisionByCode)) return
+
+    const userDivision = currentUser?.division
+    if (!userDivision) return
+
+    const existingReceipts = Array.isArray(doc.divisionReceipts) ? doc.divisionReceipts : []
+    const existingEntry = existingReceipts.find((entry) => entry?.division === userDivision)
+    if (isReceiptAcknowledged(existingEntry) || isReceiptViewed(existingEntry)) return
+
+    const nowIso = new Date().toISOString()
+    const nextReceipts = [
+      ...existingReceipts.filter((entry) => entry?.division !== userDivision),
+      {
+        ...existingEntry,
+        division: userDivision,
+        viewedAt: nowIso,
+        viewedBy: currentUser?.name || 'Division Staff',
+      },
+    ]
+
+    updateDocumentStatus(doc.id, doc.status, { divisionReceipts: nextReceipts })
+  }, [doc?.id, doc?.status, doc?.divisionReceipts, currentUser, isIncoming, isUserMainDivision, isUserSupportingDivision, isUserInRoutedDivisionByCode, updateDocumentStatus])
+
+  useEffect(() => {
+    if (!doc || !currentUser) return
+    if (!isIncoming || currentUser?.systemRole !== 'Division') return
+    if (!isUserMainDivision) return
+    if (!(doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED || doc.status === WORKFLOW_STATUS.REROUTED)) return
+    if (isMainOprAcknowledged || isTaskCompleted) return
+
+    let cancelled = false
+    const updateViewing = () => {
+      if (cancelled) return
+      updateDocumentStatus(doc.id, doc.status, {
+        mainOprViewingAt: new Date().toISOString(),
+        mainOprViewingBy: currentUser?.name || 'Main OPR',
+      })
     }
-  }, [doc?.status, doc?.divisionReceipts, currentUser, isIncoming, isUserSupportingDivision, doc?.trackingNumber])
+
+    updateViewing()
+    const intervalId = window.setInterval(updateViewing, 3000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+      updateDocumentStatus(doc.id, doc.status, { mainOprViewingAt: '', mainOprViewingBy: '' })
+    }
+  }, [doc?.id, doc?.status, currentUser, isIncoming, isUserMainDivision, isMainOprAcknowledged, isTaskCompleted, updateDocumentStatus])
 
   const loadExternalAttachmentFiles = async (dirHandle) => {
     const next = {}
     for (const att of (doc.attachments || [])) {
       if (!att?.savedToExternal) continue
       const key = att.id || att.name
-      const folderName = att.externalFolder || doc.trackingNumber
       try {
+        const rawExternalFolder = att.externalFolder
+        const folderName = rawExternalFolder === undefined || rawExternalFolder === null
+          ? doc.trackingNumber
+          : String(rawExternalFolder || '').trim()
         const baseFolderName = String(att.externalBaseFolder || '').trim()
-        let folderHandle
+        let baseHandle = dirHandle
         if (baseFolderName) {
           try {
-            const baseHandle = await dirHandle.getDirectoryHandle(baseFolderName)
-            folderHandle = await baseHandle.getDirectoryHandle(folderName)
+            baseHandle = await dirHandle.getDirectoryHandle(baseFolderName)
           } catch {
-            folderHandle = await dirHandle.getDirectoryHandle(folderName)
+            baseHandle = dirHandle
           }
-        } else {
-          folderHandle = await dirHandle.getDirectoryHandle(folderName)
         }
-        const fileHandle = await folderHandle.getFileHandle(att.name)
+
+        let fileParentHandle = baseHandle
+        if (folderName) {
+          try {
+            fileParentHandle = await baseHandle.getDirectoryHandle(folderName)
+          } catch {
+            fileParentHandle = baseHandle
+          }
+        }
+
+        const fileHandle = await fileParentHandle.getFileHandle(att.name)
         const file = await fileHandle.getFile()
         next[key] = {
           name: file.name,
@@ -753,7 +995,7 @@ export default function DocumentDetail({ currentUser }) {
     toast.success('Instruction comment added.')
   }
 
-  const openPMRoutingModal = () => {
+  const openPMRoutingModal = (mode = 'pm') => {
     const selected = Array.isArray(doc.targetDivisions)
       ? doc.targetDivisions.filter(Boolean)
       : (doc.targetDivision ? [doc.targetDivision] : [])
@@ -772,10 +1014,16 @@ export default function DocumentDetail({ currentUser }) {
 
     setMainRouteDivision(docMain)
     setRouteToDivisions(selected.filter((division) => division && division !== docMain))
-    setRouteAction(normalizeTransmittalAction(doc.action))
+    setRouteActions(normalizeTransmittalActions(doc.action))
     setRouteInstructions(doc.pmTransmittalInstructions || '')
+    const { presetKeys, customTag } = splitRouteTags(doc.routeTags)
+    setRouteTagKeys(presetKeys)
+    setCustomTagLabel(customTag?.label || '')
+    setCustomTagColor(customTag?.color || DEFAULT_CUSTOM_TAG_COLOR)
+    setRouteDeliveryMethod((mode === 'opm-finalize-edit' || mode === 'opm-outgoing-edit') ? inferInitialRoutingMethod(doc) : 'both')
     setRouteAssignmentDraft(initialDraftAssignments)
     setOpmAssignee(resolvedOpmAssignee)
+    setRoutingMode(mode)
     setShowPMRoutingModal(true)
   }
 
@@ -784,6 +1032,12 @@ export default function DocumentDetail({ currentUser }) {
     setShowPMRoutingModal(false)
     setRouteAssignmentDraft({})
     setOpmAssignee('')
+    setRouteTagKeys([])
+    setCustomTagLabel('')
+    setCustomTagColor(DEFAULT_CUSTOM_TAG_COLOR)
+    setRoutingMode('pm')
+    setRouteDeliveryMethod('both')
+    setRouteActions([TRANSMITTAL_ACTION_OPTIONS[0]])
   }
 
   const getDivisionAssignmentValue = (division) => {
@@ -806,6 +1060,12 @@ export default function DocumentDetail({ currentUser }) {
     if (cleanDivision === OPM_DIVISION) {
       setOpmAssignee(nextPosition)
     }
+  }
+
+  const getOpmDefaultAssignee = () => {
+    const options = getDivisionPositionOptionsFromCatalog(OPM_DIVISION, divisionPositionCatalog)
+    const manager = options.find((position) => normalizeDivisionValue(position) === 'division manager a')
+    return manager || options[0] || ''
   }
 
   const openDelegateModal = () => {
@@ -1029,10 +1289,16 @@ export default function DocumentDetail({ currentUser }) {
       if (division === OPM_DIVISION) {
         setOpmAssignee('')
       }
+    } else if (division === OPM_DIVISION && mainRouteDivision !== OPM_DIVISION) {
+      const defaultAssignee = getOpmDefaultAssignee()
+      if (defaultAssignee) {
+        setDivisionAssignment(OPM_DIVISION, defaultAssignee)
+      }
     }
   }
 
   const selectMainRouteDivision = (division) => {
+    const opmAsCfParty = division !== OPM_DIVISION && routeToDivisions.includes(OPM_DIVISION)
     setMainRouteDivision(division)
     setRouteToDivisions((prev) => prev.filter((item) => item !== division))
     setRouteAssignmentDraft((prev) => {
@@ -1042,10 +1308,21 @@ export default function DocumentDetail({ currentUser }) {
         [division]: { position: division === OPM_DIVISION ? String(opmAssignee || '') : '' },
       }
     })
+
+    if (opmAsCfParty) {
+      const defaultAssignee = getOpmDefaultAssignee()
+      if (defaultAssignee) {
+        setDivisionAssignment(OPM_DIVISION, defaultAssignee)
+      }
+    }
   }
 
   const submitPMRoute = async (method) => {
     if (routingToDivision) return
+    const isOpmReroute = routingMode === 'opm-reroute'
+    const isOpmFinalizeEdit = routingMode === 'opm-finalize-edit'
+    const isOpmOutgoingEdit = isOpmFinalizeEdit || routingMode === 'opm-outgoing-edit'
+    const isPostFinalizeEdit = routingMode === 'opm-outgoing-edit'
 
     const normalizedMethod = method === 'digital' ? 'digital' : method === 'both' ? 'both' : ''
     if (!normalizedMethod) {
@@ -1055,6 +1332,11 @@ export default function DocumentDetail({ currentUser }) {
 
     if (!mainRouteDivision) {
       toast.error('Please select one main division.')
+      return
+    }
+
+    if (!routeActionSummary) {
+      toast.error('Please select at least one required action.')
       return
     }
 
@@ -1087,9 +1369,27 @@ export default function DocumentDetail({ currentUser }) {
 
     const routedDivisionLabel = finalDivisions.join(', ')
     const now = new Date()
+    const normalizedFinalDivisions = finalDivisions.map(normalizeDivisionValue)
+    const divisionSet = new Set(normalizedFinalDivisions)
+    const existingReceipts = Array.isArray(doc.divisionReceipts)
+      ? doc.divisionReceipts.filter((entry) => entry?.division)
+      : []
+    const preservedReceipts = (isOpmReroute || isOpmOutgoingEdit)
+      ? existingReceipts.filter((entry) => divisionSet.has(normalizeDivisionValue(entry.division)))
+      : []
+    const statusLabel = isOpmReroute
+      ? WORKFLOW_STATUS.REROUTED
+      : isPostFinalizeEdit
+        ? WORKFLOW_STATUS.ROUTED_CONCERNED
+        : WORKFLOW_STATUS.PENDING_OPM_FINALIZATION
+    const actionLabel = isOpmReroute
+      ? 'Re-routed by OPM Assistant'
+      : isOpmOutgoingEdit
+        ? 'Updated by OPM Assistant (OPM Outgoing Review)'
+        : 'Routed by PM (OPM Outgoing Review)'
 
     setRoutingToDivision(true)
-    const updateOk = await updateDocumentStatus(doc.id, WORKFLOW_STATUS.ROUTED_CONCERNED, {
+    const updateOk = await updateDocumentStatus(doc.id, statusLabel, {
       targetDivision: mainRouteDivision,
       mainDivision: mainRouteDivision,
       oprDivision: mainRouteDivision,
@@ -1101,17 +1401,21 @@ export default function DocumentDetail({ currentUser }) {
         position: mainDivisionPosition,
       },
       currentLocation: finalDivisions.length > 1 ? 'Multiple Divisions' : mainRouteDivision,
-      action: routeAction,
+      action: routeActionSummary,
       pmTransmittalInstructions: routeInstructions,
+      routeTags: draftRouteTags,
       opmAssignee: resolvedOpmAssignee || '',
+      divisionReceipts: preservedReceipts,
+      mainOprViewingAt: '',
+      mainOprViewingBy: '',
       routingHistory: [
         ...(doc.routingHistory || []),
         {
           office: routedDivisionLabel,
-          action: `Routed by PM (${normalizedMethod === 'both' ? 'Physical + Digital' : 'Digital assignment'}) — OPR/Main: ${mainRouteDivision}; Action: ${routeAction}${routeInstructions ? `; Instructions: ${routeInstructions}` : ''}${assignmentSummary ? `; Assignments: ${assignmentSummary}` : ''}`,
+          action: `${actionLabel} (${normalizedMethod === 'both' ? 'Physical + Digital' : 'Digital assignment'}) — OPR/Main: ${mainRouteDivision}; Action: ${routeActionSummary}${routeInstructions ? `; Instructions: ${routeInstructions}` : ''}${assignmentSummary ? `; Assignments: ${assignmentSummary}` : ''}`,
           date: now.toISOString().split('T')[0],
           time: now.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' }),
-          user: currentUser?.name || 'PM',
+          user: currentUser?.name || (isOpmReroute ? 'OPM Assistant' : 'PM'),
           status: 'done',
         },
       ],
@@ -1125,7 +1429,13 @@ export default function DocumentDetail({ currentUser }) {
 
     toast.success(
       <div>
-        <strong>Routed to {finalDivisions.length > 1 ? `${finalDivisions.length} divisions` : mainRouteDivision}!</strong><br />
+        <strong>{
+          isOpmReroute
+            ? 'Re-routed to'
+            : isOpmOutgoingEdit
+              ? 'Updated OPM Outgoing (OPM Outgoing Review)'
+              : 'Routed to (OPM Outgoing Review)'
+        } {finalDivisions.length > 1 ? `${finalDivisions.length} divisions` : mainRouteDivision}!</strong><br />
         {doc.trackingNumber} ({normalizedMethod === 'both' ? 'Physical + Digital' : 'Digital assignment'})
       </div>,
       { duration: 4000 }
@@ -1135,6 +1445,50 @@ export default function DocumentDetail({ currentUser }) {
     setShowPMRoutingModal(false)
     setRouteAssignmentDraft({})
     setOpmAssignee('')
+    setRouteTagKeys([])
+    setCustomTagLabel('')
+    setCustomTagColor(DEFAULT_CUSTOM_TAG_COLOR)
+    setRoutingMode('pm')
+    setRouteDeliveryMethod('both')
+    setRouteActions([TRANSMITTAL_ACTION_OPTIONS[0]])
+  }
+
+  const handleFinalizeRouting = async () => {
+    if (finalizingRoute) return
+    setFinalizingRoute(true)
+
+    const divisions = Array.isArray(doc.targetDivisions) && doc.targetDivisions.length > 0
+      ? doc.targetDivisions.filter(Boolean)
+      : (doc.targetDivision ? [doc.targetDivision] : [])
+    const resolvedLocation = divisions.length > 1
+      ? 'Multiple Divisions'
+      : (doc.targetDivision || doc.mainDivision || divisions[0] || 'Division')
+    const now = new Date()
+    const updateOk = await updateDocumentStatus(doc.id, WORKFLOW_STATUS.ROUTED_CONCERNED, {
+      currentLocation: resolvedLocation,
+      mainOprViewingAt: '',
+      mainOprViewingBy: '',
+      routingHistory: [
+        ...(doc.routingHistory || []),
+        {
+          office: resolvedLocation,
+          action: 'Finalized by OPM Assistant — released to divisions',
+          date: now.toISOString().split('T')[0],
+          time: now.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' }),
+          user: currentUser?.name || 'OPM Assistant',
+          status: 'done',
+        },
+      ],
+    })
+
+    if (!updateOk) {
+      toast.error('Failed to finalize routing. Please try again.')
+      setFinalizingRoute(false)
+      return
+    }
+
+    toast.success('Routing finalized. Divisions can now view the document.')
+    setFinalizingRoute(false)
   }
 
   const closeEndorseModal = () => {
@@ -1395,6 +1749,14 @@ export default function DocumentDetail({ currentUser }) {
       toast.error('Value is required before acknowledgement.')
       return false
     }
+    if (!isUserMainDivision) {
+      toast.error('Only the main OPR can acknowledge via QR scan.')
+      return false
+    }
+    if (source !== 'camera') {
+      toast.error('Scan the transmittal QR to acknowledge this document.')
+      return false
+    }
     if (scannedTracking !== doc.trackingNumber) {
       toast.error(`Mismatch. Expected ${doc.trackingNumber}.`)
       return false
@@ -1404,39 +1766,42 @@ export default function DocumentDetail({ currentUser }) {
       ? doc.divisionReceipts.filter((entry) => entry?.division)
       : []
     const userDivision = currentUser?.division || 'Division'
+    const existingEntry = existingReceipts.find((entry) => entry.division === userDivision)
+    const nowIso = new Date().toISOString()
     const nextReceipts = [
       ...existingReceipts.filter((entry) => entry.division !== userDivision),
       {
+        ...existingEntry,
         division: userDivision,
         method: 'digital',
         source,
         scannedValue: scannedRaw,
         scannedTracking,
         verifiedBy: currentUser?.name || 'Division Staff',
-        verifiedAt: new Date().toISOString(),
+        verifiedAt: nowIso,
+        viewedAt: existingEntry?.viewedAt || nowIso,
+        viewedBy: existingEntry?.viewedBy || currentUser?.name || 'Division Staff',
       },
     ]
     const fullyAcknowledged = routedDivisions.length > 0
-      ? routedDivisions.every((division) => nextReceipts.some((entry) => entry.division === division))
+      ? routedDivisions.every((division) => nextReceipts.some((entry) => entry.division === division && isReceiptAcknowledged(entry)))
       : true
 
-    const isCamera = source === 'camera' || source === 'manual' // 'manual' meaning manual input of QR string
-    const actionText = isCamera
-      ? (fullyAcknowledged
-          ? 'QR-verified digital receipt (Camera scan), then Fully Received & Acknowledged'
-          : 'QR-verified digital receipt (Camera scan) recorded')
-      : (fullyAcknowledged
-          ? 'Digital receipt acknowledged, then Fully Received & Acknowledged'
-          : 'Digital receipt acknowledged')
+    const actionText = fullyAcknowledged
+      ? 'QR-verified transmittal receipt recorded, then Fully Received & Acknowledged'
+      : 'QR-verified transmittal receipt recorded'
 
-    updateDocumentStatus(doc.id, fullyAcknowledged ? 'Received & Acknowledged' : 'Routed to Division', {
+    const nextStatus = fullyAcknowledged
+      ? WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED
+      : (doc.status === WORKFLOW_STATUS.REROUTED ? WORKFLOW_STATUS.REROUTED : WORKFLOW_STATUS.ROUTED_CONCERNED)
+    updateDocumentStatus(doc.id, nextStatus, {
       qrReceipt: {
         method: 'digital',
         source,
         scannedValue: scannedRaw,
         scannedTracking,
         verifiedBy: currentUser?.name || 'Division Staff',
-        verifiedAt: new Date().toISOString(),
+        verifiedAt: nowIso,
       },
       divisionReceipts: nextReceipts,
       routingHistory: [
@@ -1579,7 +1944,10 @@ export default function DocumentDetail({ currentUser }) {
     }
   }, [])
 
-  const hasUserAcknowledged = Array.isArray(doc.divisionReceipts) && doc.divisionReceipts.some(r => r.division === currentUser?.division)
+  const userReceipt = Array.isArray(doc.divisionReceipts)
+    ? doc.divisionReceipts.find((entry) => entry?.division === currentUser?.division)
+    : null
+  const hasUserAcknowledged = Boolean(userReceipt && isReceiptAcknowledged(userReceipt))
 
   return (
     <div className="doc-detail-page">
@@ -1601,35 +1969,32 @@ export default function DocumentDetail({ currentUser }) {
               <i className="bi bi-check2-circle me-1"></i>Already Endorsed to OPM
             </Button>
           )}
-          {isIncoming && currentUser?.systemRole === 'OPM Assistant' && (
-            <Link to="/opm-assistant" className="btn btn-outline-primary btn-sm">
-              <i className="bi bi-person-check me-1"></i>Open OPM Queue
-            </Link>
+          {canOpmFinalize && (
+            <Button size="sm" variant="outline-success" onClick={handleFinalizeRouting} disabled={finalizingRoute}>
+              <i className={finalizingRoute ? 'bi bi-hourglass-split me-1' : 'bi bi-check2-circle me-1'}></i>
+              {finalizingRoute ? 'Proceeding...' : 'Proceed to OPR/s'}
+            </Button>
+          )}
+          {canOpmEditOutgoing && (
+            <Button
+              size="sm"
+              variant="outline-secondary"
+              onClick={() => openPMRoutingModal(
+                doc.status === WORKFLOW_STATUS.PENDING_OPM_FINALIZATION ? 'opm-finalize-edit' : 'opm-outgoing-edit'
+              )}
+            >
+              <i className="bi bi-pencil-square me-1"></i>Edit OPM Outgoing
+            </Button>
           )}
           {isIncoming && currentUser?.systemRole === 'PM' && (
-            <Button size="sm" variant="outline-primary" onClick={openPMRoutingModal}>
+            <Button size="sm" variant="outline-primary" onClick={() => openPMRoutingModal('pm')}>
               <i className="bi bi-diagram-3 me-1"></i>Open PM Routing
             </Button>
           )}
-          {isIncoming && currentUser?.systemRole === 'Division' && doc.status === 'Routed to Division' && !isUserInRoutedDivisionByCode && !isUserMainDivision && !isUserSupportingDivision && !hasUserAcknowledged && (
-             // Fallback for division users who aren't logically main/supporting but can still receive it as the division. Ideally should be handled naturally though.
-             <>
-               <Button variant="primary" size="sm" onClick={() => completeQrReceive(doc.trackingNumber, 'manual')}>
-                 <i className="bi bi-check2-square me-1"></i>Acknowledge Receipt
-               </Button>
-             </>
-          )}
-          {isIncoming && currentUser?.systemRole === 'Division' && doc.status === 'Routed to Division' && isUserMainDivision && !hasUserAcknowledged && (
+          {isIncoming && currentUser?.systemRole === 'Division' && (doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED || doc.status === WORKFLOW_STATUS.REROUTED) && isUserMainDivision && !hasUserAcknowledged && (
             <>
-              <Button variant="primary" size="sm" onClick={() => completeQrReceive(doc.trackingNumber, 'manual')}>
-                <i className="bi bi-check2-square me-1"></i>Acknowledge Physical Document
-              </Button>
-            </>
-          )}
-          {isIncoming && currentUser?.systemRole === 'Division' && doc.status === 'Routed to Division' && isUserSupportingDivision && !hasUserAcknowledged && (
-            <>
-              <Button variant="info" size="sm" onClick={() => completeQrReceive(doc.trackingNumber, 'system')} className="text-white">
-                <i className="bi bi-check-circle me-1"></i>Acknowledge Digital Receipt
+              <Button variant="primary" size="sm" onClick={openQrCamera}>
+                <i className="bi bi-upc-scan me-1"></i>Scan Transmittal QR to Acknowledge
               </Button>
             </>
           )}
@@ -1873,7 +2238,7 @@ export default function DocumentDetail({ currentUser }) {
 
                       {selectedAttachment?.savedToExternal && (
                         <div className="mb-2" style={{ fontSize: 11, color: '#6c757d' }}>
-                          Source: Seagate folder / {selectedAttachment.externalBaseFolder ? `${selectedAttachment.externalBaseFolder} / ` : ''}{selectedAttachment.externalFolder || doc.trackingNumber}
+                          Source: Seagate folder{selectedExternalSourceLabel ? ` / ${selectedExternalSourceLabel}` : ''}
                         </div>
                       )}
 
@@ -1983,8 +2348,8 @@ export default function DocumentDetail({ currentUser }) {
           <div className="content-card mb-4 doc-detail-receipt-card">
             <div className="content-card-header">
               <h6><i className="bi bi-bell me-2"></i>Division Receipt Notifications</h6>
-              <span className={`badge ${fullyReceivedByAllDivisions ? 'bg-success-subtle text-success border border-success-subtle' : 'bg-warning-subtle text-warning border border-warning-subtle'}`} style={{ fontSize: 11 }}>
-                {fullyReceivedByAllDivisions ? 'Fully Received' : 'Waiting for Division Receipts'}
+              <span className={`badge ${receiptHeaderClass}`} style={{ fontSize: 11 }}>
+                {receiptHeaderLabel}
               </span>
             </div>
             <div className="content-card-body" style={{ background: '#f8f9fa', padding: 12 }}>
@@ -2000,8 +2365,47 @@ export default function DocumentDetail({ currentUser }) {
                   {orderedDivisionList.map((division, idx) => {
                     const receipt = divisionReceipts.find((entry) => entry.division === division)
                     const isMain = division === mainDivision
+                    const isAcknowledged = isReceiptAcknowledged(receipt)
+                    const isViewed = Boolean(receipt && (isReceiptViewed(receipt) || isAcknowledged))
+                    const isSupporting = !isMain
+                    const shouldMarkCompleted = isTaskCompleted
+                    const shouldShowViewed = isSupporting && isViewed && !isTaskCompleted
+                    const shouldShowAcknowledged = isMain && isAcknowledged && !isTaskCompleted
+                    const isMainPendingActive = isMain && !isTaskCompleted && !isAcknowledged && doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED && isMainOprViewingActive
+                    const receiptSourceLabel = receipt?.source === 'manual'
+                      ? 'Manual Entry'
+                      : receipt?.source === 'system'
+                        ? 'Digital'
+                        : 'QR Scan'
+                    const receiptStatusLabel = shouldMarkCompleted
+                      ? 'Completed'
+                      : shouldShowAcknowledged
+                        ? 'Acknowledged'
+                        : shouldShowViewed
+                          ? 'Viewed'
+                          : 'Pending'
+                    const receiptSummary = shouldMarkCompleted
+                      ? (isMain ? 'Task completed' : 'Completed by Main OPR')
+                      : shouldShowAcknowledged
+                        ? `Acknowledged (${receiptSourceLabel})`
+                        : shouldShowViewed
+                          ? 'Viewed'
+                          : (isMain ? 'Pending completion' : 'Pending view')
+                    const receiptBy = shouldShowAcknowledged
+                      ? receipt?.verifiedBy
+                      : shouldShowViewed
+                        ? receipt?.viewedBy
+                        : ''
+                    const pendingBadgeClass = isMainPendingActive ? 'bg-warning text-dark' : 'bg-secondary'
+                    const badgeClass = receiptStatusLabel === 'Completed'
+                      ? 'bg-success'
+                      : receiptStatusLabel === 'Acknowledged'
+                        ? 'bg-info text-dark'
+                        : receiptStatusLabel === 'Viewed'
+                          ? 'bg-primary-subtle text-primary border border-primary-subtle'
+                          : pendingBadgeClass
                     return (
-                      <div key={division} className="p-2 rounded" style={{ background: '#fff', border: `1px solid ${receipt ? '#c3e6cb' : '#dee2e6'}` }}>
+                      <div key={division} className="p-2 rounded" style={{ background: '#fff', border: `1px solid ${receiptStatusLabel === 'Completed' || receiptStatusLabel === 'Acknowledged' ? '#c3e6cb' : receiptStatusLabel === 'Viewed' ? '#cfe2ff' : isMainPendingActive ? '#ffe69c' : '#dee2e6'}` }}>
                         <div className="d-flex justify-content-between align-items-start gap-2">
                           <div>
                             <div className="fw-semibold" style={{ fontSize: 13 }}>
@@ -2009,18 +2413,16 @@ export default function DocumentDetail({ currentUser }) {
                               {isMain && <span className="badge bg-danger ms-2" style={{ fontSize: 10 }}>M</span>}
                             </div>
                             <div style={{ fontSize: 11, color: '#6c757d' }}>
-                              {receipt
-                                ? `Received (${receipt.source === 'system' ? 'Digital' : 'QR Scan'})`
-                                : (isMain ? 'Pending QR scan receive' : 'Pending digital receive')}
+                              {receiptSummary}
                             </div>
-                            {receipt?.verifiedBy && (
+                            {receiptBy && (
                               <div style={{ fontSize: 11, color: '#6c757d' }}>
-                                By: {receipt.verifiedBy}
+                                By: {receiptBy}
                               </div>
                             )}
                           </div>
-                          <span className={`badge ${receipt ? 'bg-success' : 'bg-secondary'}`} style={{ fontSize: 10, alignSelf: 'center' }}>
-                            {receipt ? 'Done' : 'Pending'}
+                          <span className={`badge ${badgeClass}`} style={{ fontSize: 10, alignSelf: 'center' }}>
+                            {receiptStatusLabel}
                           </span>
                         </div>
                       </div>
@@ -2294,12 +2696,16 @@ export default function DocumentDetail({ currentUser }) {
       >
         <Modal.Header closeButton={!routingToDivision}>
           <Modal.Title style={{ fontSize: 18 }}>
-            <i className="bi bi-send me-2"></i>Edit Transmittal Slip & Route to Division
+            <i className="bi bi-send me-2"></i>{routeEditorTitle}
           </Modal.Title>
         </Modal.Header>
         <Modal.Body>
           <div className="mb-3" style={{ fontSize: 13 }}>
-            <strong>{doc.trackingNumber}</strong> - {doc.subject}
+            <div className="d-flex flex-wrap align-items-center gap-2">
+              <strong>{doc.trackingNumber}</strong>
+              {renderDocTags(draftRouteTags, 'doc-tag-group-inline')}
+              <span>— {doc.subject}</span>
+            </div>
           </div>
 
           <Row className="g-3">
@@ -2317,20 +2723,97 @@ export default function DocumentDetail({ currentUser }) {
                   ))}
                 </Form.Select>
               </Form.Group>
+              {mainRouteDivision === OPM_DIVISION && (
+                <Form.Group className="mb-3">
+                  <Form.Label className="fw-semibold" style={{ fontSize: 13 }}>OPM Delegate *</Form.Label>
+                  <Form.Select
+                    value={opmAssignee}
+                    onChange={(e) => setDivisionAssignment(OPM_DIVISION, e.target.value)}
+                    disabled={routingToDivision}
+                  >
+                    <option value="">Select OPM delegate...</option>
+                    {getDivisionPositionOptionsFromCatalog(OPM_DIVISION, divisionPositionCatalog).map((position) => (
+                      <option key={position} value={position}>{position}</option>
+                    ))}
+                  </Form.Select>
+                </Form.Group>
+              )}
             </Col>
 
             <Col md={6}>
               <Form.Group className="mb-3">
                 <Form.Label className="fw-semibold" style={{ fontSize: 13 }}>Required Action</Form.Label>
-                <Form.Select
-                  value={routeAction}
-                  onChange={(e) => setRouteAction(e.target.value)}
-                  disabled={routingToDivision}
-                >
-                  {TRANSMITTAL_ACTION_OPTIONS.map((option) => (
-                    <option key={option} value={option}>{option}</option>
+                  <Dropdown autoClose="outside">
+                    <Dropdown.Toggle
+                      variant="outline-secondary"
+                      className="w-100 text-start d-flex justify-content-between align-items-center"
+                      disabled={routingToDivision}
+                    >
+                      <span>{routeActionToggleLabel}</span>
+                    </Dropdown.Toggle>
+                    <Dropdown.Menu className="w-100 p-2" style={{ maxHeight: 220, overflowY: 'auto' }}>
+                      {TRANSMITTAL_ACTION_OPTIONS.map((option) => (
+                        <Form.Check
+                          key={option}
+                          type="checkbox"
+                          id={`doc-route-action-${option}`}
+                          label={option}
+                          checked={routeActions.includes(option)}
+                          onChange={() => toggleRouteAction(option)}
+                          className="mb-1"
+                          disabled={routingToDivision}
+                        />
+                      ))}
+                    </Dropdown.Menu>
+                  </Dropdown>
+                  <div className="mt-2 text-muted" style={{ fontSize: 12 }}>
+                    Selected: {routeActionSummary || 'None'}
+                  </div>
+              </Form.Group>
+              <Form.Group className="mb-3">
+                <Form.Label className="fw-semibold" style={{ fontSize: 13 }}>Tags</Form.Label>
+                <div className="doc-tag-picker">
+                  {TAG_PRESETS.map((tag) => (
+                    <Form.Check
+                      key={tag.key}
+                      type="checkbox"
+                      id={`doc-route-tag-${tag.key}`}
+                      label={<span className={getTagClassName(tag)}>{tag.label}</span>}
+                      checked={routeTagKeys.includes(tag.key)}
+                      onChange={() => toggleRouteTag(tag.key)}
+                      disabled={routingToDivision}
+                      className="doc-tag-toggle"
+                    />
                   ))}
-                </Form.Select>
+                </div>
+                <div className="doc-tag-custom-row">
+                  <Form.Control
+                    type="color"
+                    value={customTagColor}
+                    onChange={(e) => setCustomTagColor(e.target.value)}
+                    className="doc-tag-color-input"
+                    title="Custom tag color"
+                    disabled={routingToDivision}
+                  />
+                  <Form.Control
+                    type="text"
+                    value={customTagLabel}
+                    onChange={(e) => setCustomTagLabel(e.target.value)}
+                    placeholder="Custom tag (max 15 chars)"
+                    maxLength={15}
+                    className="doc-tag-label-input"
+                    disabled={routingToDivision}
+                  />
+                  <span className="doc-tag-count">{customTagLabel.trim().length}/15</span>
+                  {customTagLabel.trim() && (
+                    <span
+                      className="doc-tag doc-tag--custom"
+                      style={{ backgroundColor: customTagColor || DEFAULT_CUSTOM_TAG_COLOR }}
+                    >
+                      {customTagLabel.trim()}
+                    </span>
+                  )}
+                </div>
               </Form.Group>
             </Col>
 
@@ -2378,12 +2861,45 @@ export default function DocumentDetail({ currentUser }) {
           </Row>
         </Modal.Body>
         <Modal.Footer>
-          <Button variant="primary" onClick={() => submitPMRoute('both')} disabled={routingToDivision}>
-            <i className="bi bi-send-check me-1"></i>Route (Physical + Digital)
-          </Button>
-          <Button variant="outline-secondary" onClick={() => submitPMRoute('digital')} disabled={routingToDivision}>
-            <i className="bi bi-cloud-check me-1"></i>Digital Only
-          </Button>
+          {isOpmOutgoingEdit ? (
+            <div className="d-flex flex-wrap gap-3 w-100 justify-content-between align-items-center">
+              <div>
+                <div className="fw-semibold text-muted" style={{ fontSize: 12 }}>Current Selected:</div>
+                <div className="d-flex flex-column gap-1 mt-1">
+                  <Form.Check
+                    type="radio"
+                    id="doc-update-method-both"
+                    name="doc-update-method"
+                    label={routePrimaryLabel}
+                    checked={routeDeliveryMethod === 'both'}
+                    onChange={() => setRouteDeliveryMethod('both')}
+                    disabled={routingToDivision}
+                  />
+                  <Form.Check
+                    type="radio"
+                    id="doc-update-method-digital"
+                    name="doc-update-method"
+                    label={routeSecondaryLabel}
+                    checked={routeDeliveryMethod === 'digital'}
+                    onChange={() => setRouteDeliveryMethod('digital')}
+                    disabled={routingToDivision}
+                  />
+                </div>
+              </div>
+              <Button variant="primary" onClick={() => submitPMRoute(routeDeliveryMethod)} disabled={routingToDivision}>
+                <i className="bi bi-save me-1"></i>Save and Proceed
+              </Button>
+            </div>
+          ) : (
+            <>
+              <Button variant="primary" onClick={() => submitPMRoute('both')} disabled={routingToDivision}>
+                <i className="bi bi-send-check me-1"></i>{routePrimaryLabel}
+              </Button>
+              <Button variant="outline-secondary" onClick={() => submitPMRoute('digital')} disabled={routingToDivision}>
+                <i className="bi bi-cloud-check me-1"></i>{routeSecondaryLabel}
+              </Button>
+            </>
+          )}
         </Modal.Footer>
       </Modal>
 

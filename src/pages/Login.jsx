@@ -75,16 +75,25 @@ export default function Login() {
       }}>
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
           <img
-            src="/branding/PPA_small.jpg"
-            alt="PPA Logo"
-            style={{ width: 76, height: 76, borderRadius: '50%', objectFit: 'cover', border: '3px solid #002868', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
+            src="/branding/PMO%20Logo%20v2.jpg"
+            alt="IRRIS Logo"
+            style={{
+              width: 140,
+              height: 140,
+              borderRadius: 16,
+              objectFit: 'contain',
+              background: '#fff',
+              padding: 8,
+              border: '2px solid rgba(0, 40, 104, 0.12)',
+              boxShadow: '0 6px 18px rgba(0,0,0,0.12)'
+            }}
             onError={(e) => { e.currentTarget.style.display = 'none' }}
           />
-          <h2 style={{ margin: '16px 0 4px', fontSize: 22, fontWeight: 800, color: '#002868', letterSpacing: '-0.5px' }}>
-            DocTrack EDMS
+          <h2 style={{ margin: '18px 0 6px', fontSize: 22, fontWeight: 800, color: '#002868', letterSpacing: '-0.5px' }}>
+            IRRIS
           </h2>
-          <p style={{ fontSize: 12, color: '#6c757d', margin: 0, fontWeight: 500 }}>
-            Philippine Ports Authority — PMO Negros Occ/BBB
+          <p style={{ fontSize: 12, color: '#6c757d', margin: 0, fontWeight: 600 }}>
+            Incomming Records and Indorsement System
           </p>
         </div>
 
@@ -159,7 +168,7 @@ export default function Login() {
         </form>
 
         <div style={{ textAlign: 'center', marginTop: 24, fontSize: 11, color: '#adb5bd', fontWeight: 500 }}>
-          DocTrack EDMS v2.0 — Records Process Flow Improvement
+          IRRIS v2.0 — Records Process Flow Improvement
         </div>
       </div>
     </div>

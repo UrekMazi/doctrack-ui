@@ -14,6 +14,46 @@ const TYPE_SCALE = {
   tableBody: 8.4,
 }
 
+const TRANSMITTAL_ACTION_OPTIONS = [
+  'As appropriate',
+  'Prepare Reply',
+  'Give comments/recommendations',
+  'For information/reference/file',
+  'Disseminate',
+  'For evaluation/review',
+  'For monitoring',
+  'For coordination',
+]
+
+const LEGACY_TRANSMITTAL_ACTION_MAP = {
+  'For review and appropriate action': 'As appropriate',
+  'For information': 'For information/reference/file',
+  'For approval / signature': 'For evaluation/review',
+  'For compliance': 'For monitoring',
+  'For comment / recommendation': 'Give comments/recommendations',
+}
+
+const ACTION_SPLIT_REGEX = /\s*[;|]\s*/
+
+function normalizeTransmittalActions(value) {
+  if (Array.isArray(value)) {
+    const normalized = value
+      .map((entry) => LEGACY_TRANSMITTAL_ACTION_MAP[String(entry || '').trim()] || String(entry || '').trim())
+      .filter((entry) => TRANSMITTAL_ACTION_OPTIONS.includes(entry))
+    return normalized.length ? Array.from(new Set(normalized)) : []
+  }
+
+  const raw = String(value || '').trim()
+  if (!raw) return []
+
+  const parts = raw.split(ACTION_SPLIT_REGEX).map((entry) => entry.trim()).filter(Boolean)
+  const normalized = parts
+    .map((entry) => LEGACY_TRANSMITTAL_ACTION_MAP[entry] || entry)
+    .filter((entry) => TRANSMITTAL_ACTION_OPTIONS.includes(entry))
+
+  return normalized.length ? Array.from(new Set(normalized)) : []
+}
+
 const ROOT_STYLE = {
   width: 'var(--transmittal-slip-width, 340px)',
   background: '#fff',
@@ -51,6 +91,8 @@ const IncomingTransmittalSlip = forwardRef(function IncomingTransmittalSlip(
   const dueDateTone = dueDate ? '#dc3545' : '#002868'
   const controlRefLabelFontSize = isPrint ? 8 : 6.9
   const controlRefValueFontSize = isPrint ? 9.4 : 9.2
+  const normalizedActions = normalizeTransmittalActions(action)
+  const actionSet = new Set(normalizedActions)
   const rootStyle = {
     ...ROOT_STYLE,
     fontSize: isPrint ? 'var(--transmittal-slip-font-size, 8.5px)' : 'var(--transmittal-slip-font-size, 8px)',
@@ -115,10 +157,10 @@ const IncomingTransmittalSlip = forwardRef(function IncomingTransmittalSlip(
       <div style={{ borderBottom: '1px solid #000', padding: '3px 4px' }}>
         <div style={{ fontSize: 7, fontWeight: 700, marginBottom: 2 }}>ACTION REQUIRED:</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '2px 12px', fontSize: 7 }}>
-          {['As appropriate', 'Prepare Reply', 'Give comments/recommendations', 'For information/reference/file', 'Disseminate', 'For evaluation/review', 'For monitoring', 'For coordination'].map((act) => (
+          {TRANSMITTAL_ACTION_OPTIONS.map((act) => (
             <label key={act} style={{ display: 'flex', alignItems: 'center', gap: 2, cursor: 'default', lineHeight: 1.5 }}>
               <span style={{ width: 8, height: 8, border: '1px solid #000', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: typeScale.tiny, fontWeight: 700, flexShrink: 0, background: '#fff', color: '#000' }}>
-                {action === act ? '✓' : ''}
+                {actionSet.has(act) ? '✓' : ''}
               </span>
               <span>{act}</span>
             </label>
