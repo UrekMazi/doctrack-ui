@@ -887,6 +887,100 @@ body {
   font-size: 14px;
 }
 
+.pm-routing-table .pm-cell-subject {
+  white-space: normal;
+  overflow: visible;
+}
+
+.pm-routing-table .pm-cell-subject .doc-subject-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doc-tag-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.doc-tag-group-table {
+  margin-bottom: 4px;
+}
+
+.doc-tag-group-inline {
+  margin: 0;
+}
+
+.doc-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: #ffffff;
+}
+
+.doc-tag--priority {
+  background: #1b65d7;
+  text-transform: uppercase;
+}
+
+.doc-tag--urgent {
+  background: #ce1126;
+  text-transform: uppercase;
+}
+
+.doc-tag--followup {
+  background: #f59f00;
+  text-transform: uppercase;
+}
+
+.doc-tag--custom {
+  background: #6c757d;
+}
+
+.doc-tag-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.doc-tag-toggle {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.doc-tag-custom-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.doc-tag-color-input {
+  width: 36px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+
+.doc-tag-label-input {
+  min-width: 140px;
+  max-width: 220px;
+}
+
+.doc-tag-count {
+  font-size: 11px;
+  color: #6c757d;
+}
+
 /* Division routed docs compact layout */
 .division-docs-table {
   table-layout: fixed;

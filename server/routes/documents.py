@@ -361,6 +361,12 @@ def get_document(doc_id):
     if not can_user_access_document(doc, user):
         return jsonify({'error': 'Access denied for this document'}), 403
 
+    if normalize_string(user.role) == 'Division' and normalize_string(doc.status) in ('Pending OPM Finalization', 'OPM Outgoing Review'):
+        return jsonify({'error': 'Document is in OPM outgoing review'}), 403
+
+    if normalize_string(user.role) == 'Division' and normalize_string(doc.status) in ('Pending OPM Finalization', 'OPM Outgoing Review'):
+        return jsonify({'error': 'Document is in OPM outgoing review'}), 403
+
     return jsonify({'document': doc.to_dict()})
 
 
@@ -801,6 +807,10 @@ def save_document_files(tracking_number):
         return jsonify({'error': 'No attachments provided'}), 400
 
     attachments = data['attachments']
+    stamped_only = [att for att in attachments if att.get('kind') == 'stamped-pdf']
+    if not stamped_only:
+        return jsonify({'error': 'Stamped PDF attachment is required'}), 400
+    attachments = stamped_only
 
     target_folder_name = build_document_folder_name(tracking_number, data.get('subject'))
     decoded_attachments = []
@@ -819,7 +829,7 @@ def save_document_files(tracking_number):
         except Exception:
             continue
 
-        target_name = att['name']
+        target_name = att.get('name') or ''
         if att.get('kind') == 'original':
             ext = os.path.splitext(att['name'])[1]
             if not ext:
@@ -828,9 +838,12 @@ def save_document_files(tracking_number):
         elif att.get('kind') == 'stamped-image':
             target_name = f"{tracking_number}.png"
         elif att.get('kind') == 'stamped-pdf':
-            target_name = f"{tracking_number}.pdf"
+            target_name = f"{target_folder_name}.pdf"
 
         decoded_attachments.append((target_name, file_data, att['name']))
+
+    if not decoded_attachments:
+        return jsonify({'error': 'No valid stamped PDF attachments found'}), 400
 
     storage_candidates = get_storage_root_candidates(data.get('storageFolder'))
     write_errors = []
@@ -841,7 +854,7 @@ def save_document_files(tracking_number):
         base_root = candidate['base_root']
         fallback_used = candidate['fallback_used']
 
-        target_dir = os.path.join(storage_root, target_folder_name)
+        target_dir = storage_root
         saved_files = []
 
         try:
@@ -871,7 +884,7 @@ def save_document_files(tracking_number):
         return jsonify({
             'message': 'Files saved successfully',
             'directory': target_dir,
-            'documentFolder': target_folder_name,
+            'documentFolder': '',
             'storageRoot': storage_root,
             'storageRootUsed': base_root,
             'storageFallbackUsed': fallback_used,
@@ -902,9 +915,17 @@ def get_document_file(tracking_number, filename):
     if not doc and normalize_string(user.role) == 'Division':
         return jsonify({'error': 'Access denied for this document file'}), 403
 
+    target_folder_name = ''
+    if doc:
+        target_folder_name = build_document_folder_name(tracking_number, doc.subject)
+
     candidate_dirs = []
     for candidate in get_storage_root_candidates(request.args.get('storageFolder')):
-        candidate_dirs.append(os.path.join(candidate['storage_root'], tracking_number))
+        storage_root = candidate['storage_root']
+        candidate_dirs.append(storage_root)
+        if target_folder_name:
+            candidate_dirs.append(os.path.join(storage_root, target_folder_name))
+        candidate_dirs.append(os.path.join(storage_root, tracking_number))
 
     # Backward compatibility for files saved before dedicated-folder support.
     candidate_dirs.append(os.path.join(LEGACY_STORAGE_ROOT, tracking_number))

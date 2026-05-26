@@ -31,7 +31,18 @@ const STORAGE_DEST_LABEL = STORAGE_TARGET === 'onedrive'
   ? 'OneDrive (fallback: Seagate D:)'
   : 'Seagate (D:)' 
 const DEFAULT_STORAGE_FOLDER = (import.meta.env.VITE_STORAGE_BASE_FOLDER || 'DocTrack Files').trim()
+const RECEIVED_STAMP_PREF_KEY = 'doctrack_received_stamp_visible'
 
+const readReceivedStampPref = () => {
+  if (typeof window === 'undefined') return false
+  try {
+    const raw = window.localStorage.getItem(RECEIVED_STAMP_PREF_KEY)
+    if (raw === null) return false
+    return raw === 'true'
+  } catch {
+    return false
+  }
+}
 const getCurrentDateInputValue = () => new Date().toISOString().split('T')[0]
 const getCurrentTimeInputValue = () => new Date().toLocaleTimeString('en-PH', {
   hour: '2-digit',
@@ -214,11 +225,20 @@ export default function ScanRegister() {
   const [ctrlStampVisible, setCtrlStampVisible] = useState(true)
   const ctrlStampElRef = useRef(null)
   const [receivedStampPos, setReceivedStampPos] = useState({ x: 0, y: 0 })
-  const [receivedStampVisible, setReceivedStampVisible] = useState(true)
+  const [receivedStampVisible, setReceivedStampVisible] = useState(() => readReceivedStampPref())
   const receivedStampElRef = useRef(null)
 
   // Track whether any stamp was just dragged (to suppress container onClick)
   const justDraggedRef = useRef(false)
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      window.localStorage.setItem(RECEIVED_STAMP_PREF_KEY, String(receivedStampVisible))
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [receivedStampVisible])
 
   // Center stamps when document preview mounts
   const centerStamps = useCallback(() => {
@@ -894,7 +914,7 @@ export default function ScanRegister() {
       },
       {
         id: `ATT-STAMP-PDF-${Date.now()}`,
-        name: `${trackingNumber}.pdf`,
+        name: buildStampedPdfName(trackingNumber, extracted.subject),
         type: 'application/pdf',
         kind: 'stamped-pdf',
         dataUrl: stampedPdfDataUrl,
@@ -908,7 +928,7 @@ export default function ScanRegister() {
     return res.blob()
   }
 
-  const getAttachmentTargetName = (attachment, controlNumber) => {
+  const getAttachmentTargetName = (attachment, controlNumber, subjectText = '') => {
     if (attachment?.kind === 'original') {
       const ext = getFileExtension(attachment?.name) || '.pdf'
       return `scanned_document${ext}`
@@ -917,7 +937,7 @@ export default function ScanRegister() {
       return `${controlNumber}.png`
     }
     if (attachment?.kind === 'stamped-pdf') {
-      return `${controlNumber}.pdf`
+      return buildStampedPdfName(controlNumber, subjectText)
     }
     return attachment?.name || `attachment-${Date.now()}`
   }
@@ -941,6 +961,12 @@ export default function ScanRegister() {
     if (!clipped) return tracking
 
     return `${tracking}.${clipped}`
+  }
+
+  const buildStampedPdfName = (controlNumber, subjectText = '') => {
+    const baseName = buildExternalDocumentFolderName(controlNumber, subjectText)
+    if (!baseName) return `${controlNumber}.pdf`
+    return `${baseName}.pdf`
   }
 
   const pickExternalSaveFolder = async () => {
@@ -984,13 +1010,13 @@ export default function ScanRegister() {
     }
 
     try {
-      const targetFolderName = buildExternalDocumentFolderName(controlNumber, subjectText)
-      const targetDirHandle = await baseHandle.getDirectoryHandle(targetFolderName, { create: true })
+      const stampedOnly = attachmentsToSave.filter(att => att?.kind === 'stamped-pdf')
+      const effectiveAttachments = stampedOnly.length ? stampedOnly : attachmentsToSave
 
-      for (const attachment of attachmentsToSave) {
+      for (const attachment of effectiveAttachments) {
         if (!attachment?.dataUrl) continue
-        const targetName = getAttachmentTargetName(attachment, controlNumber)
-        const fileHandle = await targetDirHandle.getFileHandle(targetName, { create: true })
+        const targetName = getAttachmentTargetName(attachment, controlNumber, subjectText)
+        const fileHandle = await baseHandle.getFileHandle(targetName, { create: true })
         const writable = await fileHandle.createWritable()
         const blob = await dataUrlToBlob(attachment.dataUrl)
         await writable.write(blob)
@@ -999,9 +1025,9 @@ export default function ScanRegister() {
 
       return {
         ok: true,
-        directory: `${saveDirLabel}\\${targetFolderName}`,
-        documentFolder: targetFolderName,
-        storageFolder: '',
+        directory: saveDirLabel,
+        documentFolder: '',
+        storageFolder: baseHandle.name || '',
         mode: 'folder-picker',
       }
     } catch (err) {
@@ -1044,7 +1070,7 @@ export default function ScanRegister() {
       return {
         ok: true,
         directory: result.directory,
-        documentFolder: result.documentFolder || buildExternalDocumentFolderName(controlNumber, subjectText),
+          documentFolder: result.documentFolder || '',
         storageFolder: result.storageFolder || requestedStorageFolder,
         storageRootUsed: result.storageRootUsed || result.storageRoot || '',
         storageFallbackUsed: !!result.storageFallbackUsed,
@@ -1133,20 +1159,23 @@ export default function ScanRegister() {
 
     if (attachments.length > 0) {
       try {
-        const externalSaveResult = await saveAttachmentsToDirectory(attachments, trackingNumber, extracted.subject)
+        const stampedOnly = attachments.filter(att => att?.kind === 'stamped-pdf')
+        const attachmentsToSave = stampedOnly.length ? stampedOnly : attachments
+
+        const externalSaveResult = await saveAttachmentsToDirectory(attachmentsToSave, trackingNumber, extracted.subject)
         if (!externalSaveResult.ok) {
           toast.error(externalSaveResult.error || `Save canceled. Could not write files to ${STORAGE_DEST_LABEL}.`)
           return
         }
 
         // Keep document state lightweight: store metadata only; files are in external folder.
-        attachmentsForRecord = attachments.map(att => ({
+        attachmentsForRecord = attachmentsToSave.map(att => ({
           id: att.id,
           name: att.name,
           type: att.type,
           kind: att.kind,
           savedToExternal: true,
-          externalFolder: externalSaveResult.documentFolder || trackingNumber,
+          externalFolder: externalSaveResult.documentFolder || '',
           externalBaseFolder: externalSaveResult.storageFolder,
         }))
       } catch (err) {
@@ -1573,7 +1602,6 @@ export default function ScanRegister() {
                       variant={ctrlStampVisible ? 'primary' : 'outline-secondary'}
                       className="d-flex align-items-center text-nowrap"
                       onClick={() => setCtrlStampVisible(!ctrlStampVisible)}
-                      disabled={!trackingNumber}
                       style={{ fontSize: 11 }}
                       title="Show and drag the Control/Reference stamp overlay."
                     >
@@ -1593,7 +1621,7 @@ export default function ScanRegister() {
                 </div>
                 {!trackingNumber && (
                   <div className="mt-2" style={{ fontSize: 11, color: '#6c757d' }}>
-                    Assign a Control/Reference Number first to enable the Control/Reference stamp.
+                    Assign a Control/Reference Number to populate the stamp text.
                   </div>
                 )}
               </div>

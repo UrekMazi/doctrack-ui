@@ -91,6 +91,18 @@ export default function Dashboard({ currentUser }) {
     return doc.targetDivision === division || explicitTargets.includes(division)
   }
 
+  const isRoutedStatus = (status) => (
+    status === WORKFLOW_STATUS.ROUTED_CONCERNED ||
+    status === WORKFLOW_STATUS.REROUTED ||
+    status === WORKFLOW_STATUS.PENDING_OPM_FINALIZATION
+  )
+
+  const getKanbanCount = (statusKey) => (
+    statusKey === WORKFLOW_STATUS.ROUTED_CONCERNED
+      ? dailyDocuments.filter(d => isRoutedStatus(d.status)).length
+      : dailyDocuments.filter(d => d.status === statusKey).length
+  )
+
   const operatorKanbanColumns = [
     { key: WORKFLOW_STATUS.REGISTERED, title: 'Records', subtitle: 'Registered', accent: '#0d6efd' },
     { key: WORKFLOW_STATUS.OPM_INITIAL_REVIEW, title: 'OPM', subtitle: 'Initial Review', accent: '#6f42c1' },
@@ -101,7 +113,7 @@ export default function Dashboard({ currentUser }) {
 
   const kanbanByStatus = operatorKanbanColumns.reduce((acc, col) => {
     acc[col.key] = dailyDocuments
-      .filter(d => d.status === col.key)
+      .filter(d => (col.key === WORKFLOW_STATUS.ROUTED_CONCERNED ? isRoutedStatus(d.status) : d.status === col.key))
       .slice(0, 6)
     return acc
   }, {})
@@ -150,13 +162,20 @@ export default function Dashboard({ currentUser }) {
 
   // PM sees endorsed docs
   const endorsedDocs = documents.filter(d =>
-    d.status === WORKFLOW_STATUS.PM_REVIEW || d.status === WORKFLOW_STATUS.ROUTED_CONCERNED || d.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED
+    d.status === WORKFLOW_STATUS.PM_REVIEW ||
+    d.status === WORKFLOW_STATUS.PENDING_OPM_FINALIZATION ||
+    d.status === WORKFLOW_STATUS.ROUTED_CONCERNED ||
+    d.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED ||
+    d.status === WORKFLOW_STATUS.REROUTED
   ).slice(0, 5)
   const pendingForPM = dailyDocuments.filter(d => d.status === WORKFLOW_STATUS.PM_REVIEW).length
 
   // OPM Assistant queue
   const assistantDocs = documents.filter(d =>
-    d.status === WORKFLOW_STATUS.OPM_INITIAL_REVIEW || d.status === WORKFLOW_STATUS.PM_REVIEW
+    d.status === WORKFLOW_STATUS.OPM_INITIAL_REVIEW ||
+    d.status === WORKFLOW_STATUS.PM_REVIEW ||
+    d.status === WORKFLOW_STATUS.PENDING_OPM_FINALIZATION ||
+    d.status === WORKFLOW_STATUS.REROUTED
   ).slice(0, 5)
   const pendingAssistant = dailyDocuments.filter(d => d.status === WORKFLOW_STATUS.OPM_INITIAL_REVIEW).length
   const reviewedAssistant = dailyDocuments.filter(d => d.status === WORKFLOW_STATUS.PM_REVIEW).length
@@ -164,11 +183,11 @@ export default function Dashboard({ currentUser }) {
   // Division sees their docs
   const divDocs = documents.filter(d =>
     (isRoutedToDivision(d, currentUser?.division) || d.senderAddress === currentUser?.division) &&
-    (d.status === WORKFLOW_STATUS.ROUTED_CONCERNED || d.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED)
+    (d.status === WORKFLOW_STATUS.ROUTED_CONCERNED || d.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED || d.status === WORKFLOW_STATUS.REROUTED || d.status === WORKFLOW_STATUS.PENDING_OPM_FINALIZATION)
   ).slice(0, 5)
   const pendingForDiv = dailyDocuments.filter(d =>
     (isRoutedToDivision(d, currentUser?.division) || d.senderAddress === currentUser?.division) &&
-    d.status === WORKFLOW_STATUS.ROUTED_CONCERNED
+    (d.status === WORKFLOW_STATUS.ROUTED_CONCERNED || d.status === WORKFLOW_STATUS.REROUTED)
   ).length
 
   const roleLabels = {
@@ -218,7 +237,7 @@ export default function Dashboard({ currentUser }) {
                             <div className="d-flex justify-content-between align-items-center">
                               <span style={{ fontSize: 11, color: '#6c757d' }}>{col.subtitle}</span>
                               <span className="badge" style={{ background: col.accent, color: '#fff', fontSize: 10 }}>
-                                {dailyDocuments.filter(d => d.status === col.key).length}
+                                {getKanbanCount(col.key)}
                               </span>
                             </div>
                           </div>
@@ -475,7 +494,12 @@ export default function Dashboard({ currentUser }) {
               <div className="content-card">
                 <div className="content-card-body text-center py-3">
                   <div style={{ fontSize: 28, fontWeight: 700, color: '#198754' }}>
-                    {dailyDocuments.filter(d => d.status === 'Routed to Division' || d.status === 'Received & Acknowledged').length}
+                    {dailyDocuments.filter(d =>
+                      d.status === WORKFLOW_STATUS.ROUTED_CONCERNED ||
+                      d.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED ||
+                      d.status === WORKFLOW_STATUS.REROUTED ||
+                      d.status === WORKFLOW_STATUS.PENDING_OPM_FINALIZATION
+                    ).length}
                   </div>
                   <div style={{ fontSize: 12, color: '#6c757d' }}>Routed</div>
                 </div>
@@ -542,7 +566,7 @@ export default function Dashboard({ currentUser }) {
                   <div style={{ fontSize: 28, fontWeight: 700, color: '#198754' }}>
                     {dailyDocuments.filter(d =>
                       (isRoutedToDivision(d, currentUser?.division) || d.senderAddress === currentUser?.division) &&
-                      d.status === 'Received & Acknowledged'
+                      d.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED
                     ).length}
                   </div>
                   <div style={{ fontSize: 12, color: '#6c757d' }}>Acknowledged</div>

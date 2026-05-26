@@ -147,7 +147,9 @@ export default function Reports() {
                 <option value={WORKFLOW_STATUS.REGISTERED}>{getStatusDisplayLabel(WORKFLOW_STATUS.REGISTERED)}</option>
                 <option value={WORKFLOW_STATUS.OPM_INITIAL_REVIEW}>{getStatusDisplayLabel(WORKFLOW_STATUS.OPM_INITIAL_REVIEW)}</option>
                 <option value={WORKFLOW_STATUS.PM_REVIEW}>{getStatusDisplayLabel(WORKFLOW_STATUS.PM_REVIEW)}</option>
+                <option value={WORKFLOW_STATUS.PENDING_OPM_FINALIZATION}>{getStatusDisplayLabel(WORKFLOW_STATUS.PENDING_OPM_FINALIZATION)}</option>
                 <option value={WORKFLOW_STATUS.ROUTED_CONCERNED}>{getStatusDisplayLabel(WORKFLOW_STATUS.ROUTED_CONCERNED)}</option>
+                <option value={WORKFLOW_STATUS.REROUTED}>{getStatusDisplayLabel(WORKFLOW_STATUS.REROUTED)}</option>
                 <option value={WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED}>{getStatusDisplayLabel(WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED)}</option>
               </Form.Select>
             </Col>

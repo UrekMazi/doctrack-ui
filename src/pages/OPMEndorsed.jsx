@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Row, Col, Form, Button } from 'react-bootstrap'
+import { Row, Col, Form, Button, Dropdown } from 'react-bootstrap'
 import StatusBadge from '../components/StatusBadge'
 import { DIVISIONS } from '../data/mockData'
 import { useAuth } from '../context/AuthContext'
@@ -8,10 +8,19 @@ import { useDocuments } from '../context/DocumentContext'
 import toast from 'react-hot-toast'
 import { WORKFLOW_STATUS, getStatusDisplayLabel } from '../utils/workflowLabels'
 import {
+  TAG_PRESETS,
+  DEFAULT_CUSTOM_TAG_COLOR,
+  buildRouteTags,
+  normalizeRouteTags,
+  splitRouteTags,
+  getTagClassName,
+} from '../utils/docTags'
+import {
   OPM_DIVISION,
   buildPmRouteAssignments,
   buildRouteAssignments,
   getAssignedPosition,
+  getDivisionPositionOptionsFromCatalog,
 } from '../utils/divisionPositionAssignments'
 
 const TRANSMITTAL_ACTION_OPTIONS = [
@@ -25,6 +34,8 @@ const TRANSMITTAL_ACTION_OPTIONS = [
   'For coordination',
 ]
 
+const ACTION_SPLIT_REGEX = /\s*[;|]\s*/
+
 const LEGACY_TRANSMITTAL_ACTION_MAP = {
   'For review and appropriate action': 'As appropriate',
   'For information': 'For information/reference/file',
@@ -33,11 +44,59 @@ const LEGACY_TRANSMITTAL_ACTION_MAP = {
   'For comment / recommendation': 'Give comments/recommendations',
 }
 
-function normalizeTransmittalAction(value) {
+function normalizeTransmittalActions(value) {
+  if (Array.isArray(value)) {
+    const normalized = value
+      .map((entry) => LEGACY_TRANSMITTAL_ACTION_MAP[String(entry || '').trim()] || String(entry || '').trim())
+      .filter((entry) => TRANSMITTAL_ACTION_OPTIONS.includes(entry))
+    return normalized.length ? Array.from(new Set(normalized)) : [TRANSMITTAL_ACTION_OPTIONS[0]]
+  }
+
   const raw = String(value || '').trim()
-  if (!raw) return TRANSMITTAL_ACTION_OPTIONS[0]
-  const normalized = LEGACY_TRANSMITTAL_ACTION_MAP[raw] || raw
-  return TRANSMITTAL_ACTION_OPTIONS.includes(normalized) ? normalized : TRANSMITTAL_ACTION_OPTIONS[0]
+  if (!raw) return [TRANSMITTAL_ACTION_OPTIONS[0]]
+
+  const parts = raw.split(ACTION_SPLIT_REGEX).map((entry) => entry.trim()).filter(Boolean)
+  const normalized = parts
+    .map((entry) => LEGACY_TRANSMITTAL_ACTION_MAP[entry] || entry)
+    .filter((entry) => TRANSMITTAL_ACTION_OPTIONS.includes(entry))
+
+  return normalized.length ? Array.from(new Set(normalized)) : [TRANSMITTAL_ACTION_OPTIONS[0]]
+}
+
+function normalizeDivisionValue(value) {
+  return String(value || '').trim().toLowerCase()
+}
+
+function getRoutingMethodFromAction(action) {
+  const normalized = String(action || '').toLowerCase()
+  if (normalized.includes('physical + digital')) return 'both'
+  if (normalized.includes('digital assignment') || normalized.includes('digital only')) return 'digital'
+  return ''
+}
+
+function inferInitialRoutingMethod(doc) {
+  const history = Array.isArray(doc?.routingHistory) ? doc.routingHistory : []
+  let actionToUse = ''
+
+  for (const entry of history) {
+    const action = String(entry?.action || '')
+    if (/routed by pm .*(pending opm finalization|opm outgoing review)/i.test(action)) {
+      actionToUse = action
+      break
+    }
+  }
+
+  if (!actionToUse) {
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+      const action = String(history[i]?.action || '')
+      if (/(pending opm finalization|opm outgoing review)/i.test(action)) {
+        actionToUse = action
+        break
+      }
+    }
+  }
+
+  return getRoutingMethodFromAction(actionToUse) || 'both'
 }
 
 export default function OPMEndorsed({ currentUser }) {
@@ -51,19 +110,94 @@ export default function OPMEndorsed({ currentUser }) {
   const [routingDoc, setRoutingDoc] = useState(null)
   const [mainRouteDivision, setMainRouteDivision] = useState('')
   const [routeToDivisions, setRouteToDivisions] = useState([])
-  const [routeAction, setRouteAction] = useState(TRANSMITTAL_ACTION_OPTIONS[0])
+  const [routeActions, setRouteActions] = useState([TRANSMITTAL_ACTION_OPTIONS[0]])
   const [routeInstructions, setRouteInstructions] = useState('')
+  const [routeTagKeys, setRouteTagKeys] = useState([])
+  const [customTagLabel, setCustomTagLabel] = useState('')
+  const [customTagColor, setCustomTagColor] = useState(DEFAULT_CUSTOM_TAG_COLOR)
+  const [routeDeliveryMethod, setRouteDeliveryMethod] = useState('both')
   const [routeAssignmentDraft, setRouteAssignmentDraft] = useState({})
+  const [routingMode, setRoutingMode] = useState('pm')
+  const [finalizingDocId, setFinalizingDocId] = useState(null)
   const [divisionPositionCatalog, setDivisionPositionCatalog] = useState({})
   const [opmAssignee, setOpmAssignee] = useState('')
+  const opmPositionOptions = getDivisionPositionOptionsFromCatalog(OPM_DIVISION, divisionPositionCatalog)
   const selectedRouteDivisions = [
     mainRouteDivision,
     ...routeToDivisions.filter((division) => division !== mainRouteDivision),
   ].filter(Boolean)
   const hasOpmSelection = selectedRouteDivisions.includes(OPM_DIVISION)
+  const isOpmOutgoingEdit = routingMode === 'opm-finalize-edit' || routingMode === 'opm-outgoing-edit'
+  const routeEditorTitle = routingMode === 'opm-reroute'
+    ? 'Edit Transmittal Slip & Re-route to Division'
+    : isOpmOutgoingEdit
+      ? 'Edit OPM Outgoing (OPM Outgoing Review)'
+      : 'Edit Transmittal Slip & Route to Division'
+  const routePrimaryLabel = routingMode === 'opm-reroute'
+    ? 'Re-route (Physical + Digital)'
+    : isOpmOutgoingEdit
+      ? 'Physical + Digital'
+      : 'Route (Physical + Digital)'
+  const routeSecondaryLabel = routingMode === 'opm-reroute'
+    ? 'Re-route (Digital Only)'
+    : isOpmOutgoingEdit
+      ? 'Digital Only'
+      : 'Digital Only'
+  const draftRouteTags = buildRouteTags({
+    presetKeys: routeTagKeys,
+    customLabel: customTagLabel,
+    customColor: customTagColor,
+  })
+  const routeActionSummary = routeActions.length ? routeActions.join('; ') : ''
+  const routeActionToggleLabel = routeActions.length === 1
+    ? routeActions[0]
+    : routeActions.length > 1
+      ? `${routeActions.length} actions selected`
+      : 'Select required action(s)'
+
+  const toggleRouteTag = (tagKey) => {
+    const normalizedKey = String(tagKey || '').trim().toUpperCase()
+    if (!normalizedKey) return
+
+    setRouteTagKeys((prev) => (
+      prev.includes(normalizedKey)
+        ? prev.filter((item) => item !== normalizedKey)
+        : [...prev, normalizedKey]
+    ))
+  }
+
+  const toggleRouteAction = (option) => {
+    const normalized = String(option || '').trim()
+    if (!normalized) return
+
+    setRouteActions((prev) => {
+      const exists = prev.includes(normalized)
+      if (exists && prev.length === 1) return prev
+      return exists ? prev.filter((item) => item !== normalized) : [...prev, normalized]
+    })
+  }
+
+  const renderDocTags = (tags, className = '') => {
+    const normalized = normalizeRouteTags(tags)
+    if (normalized.length === 0) return null
+
+    return (
+      <div className={`doc-tag-group ${className}`.trim()}>
+        {normalized.map((tag) => (
+          <span
+            key={`${tag.key}-${tag.label}`}
+            className={getTagClassName(tag)}
+            style={tag.kind === 'custom' ? { backgroundColor: tag.color || DEFAULT_CUSTOM_TAG_COLOR } : undefined}
+          >
+            {tag.label}
+          </span>
+        ))}
+      </div>
+    )
+  }
 
   useEffect(() => {
-    if (!isPM || !routingDoc || !token) return
+    if (!routingDoc || !token || (!isPM && !isAssistant)) return
 
     let isCancelled = false
 
@@ -90,13 +224,31 @@ export default function OPMEndorsed({ currentUser }) {
     return () => {
       isCancelled = true
     }
-  }, [isPM, routingDoc, token])
+  }, [isPM, isAssistant, routingDoc, token])
 
   // Role-specific queue: assistant reviews then forwards; PM routes to divisions.
+  const assistantStatuses = new Set([
+    WORKFLOW_STATUS.OPM_INITIAL_REVIEW,
+    WORKFLOW_STATUS.PM_REVIEW,
+    WORKFLOW_STATUS.PENDING_OPM_FINALIZATION,
+    WORKFLOW_STATUS.ROUTED_CONCERNED,
+    WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED,
+    WORKFLOW_STATUS.REROUTED,
+  ])
+  if (statusFilter) {
+    assistantStatuses.add(statusFilter)
+  }
+  const pmStatuses = new Set([
+    WORKFLOW_STATUS.PM_REVIEW,
+    WORKFLOW_STATUS.PENDING_OPM_FINALIZATION,
+    WORKFLOW_STATUS.ROUTED_CONCERNED,
+    WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED,
+    WORKFLOW_STATUS.REROUTED,
+  ])
   const opmDocs = documents.filter(doc =>
     isAssistant
-      ? doc.status === WORKFLOW_STATUS.OPM_INITIAL_REVIEW || doc.status === WORKFLOW_STATUS.PM_REVIEW
-      : doc.status === WORKFLOW_STATUS.PM_REVIEW || doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED || doc.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED
+      ? assistantStatuses.has(doc.status)
+      : pmStatuses.has(doc.status)
   )
 
   const filtered = opmDocs.filter(doc => {
@@ -112,7 +264,8 @@ export default function OPMEndorsed({ currentUser }) {
     return true
   })
 
-  const handleRouteToDiv = (doc) => {
+  const handleRouteToDiv = (doc, mode = 'pm') => {
+    setRoutingMode(mode)
     setRoutingDoc(doc)
     const selected = Array.isArray(doc.targetDivisions)
       ? doc.targetDivisions
@@ -131,8 +284,13 @@ export default function OPMEndorsed({ currentUser }) {
 
     setMainRouteDivision(docMain)
     setRouteToDivisions(selected.filter((d) => d && d !== docMain))
-    setRouteAction(normalizeTransmittalAction(doc.action))
+    setRouteActions(normalizeTransmittalActions(doc.action))
     setRouteInstructions(doc.pmTransmittalInstructions || '')
+    const { presetKeys, customTag } = splitRouteTags(doc.routeTags)
+    setRouteTagKeys(presetKeys)
+    setCustomTagLabel(customTag?.label || '')
+    setCustomTagColor(customTag?.color || DEFAULT_CUSTOM_TAG_COLOR)
+    setRouteDeliveryMethod((mode === 'opm-finalize-edit' || mode === 'opm-outgoing-edit') ? inferInitialRoutingMethod(doc) : 'both')
     setRouteAssignmentDraft(initialDraftAssignments)
     setOpmAssignee(resolvedOpmAssignee)
   }
@@ -159,6 +317,12 @@ export default function OPMEndorsed({ currentUser }) {
     }
   }
 
+  const getOpmDefaultAssignee = () => {
+    const options = getDivisionPositionOptionsFromCatalog(OPM_DIVISION, divisionPositionCatalog)
+    const manager = options.find((position) => String(position || '').trim().toLowerCase() === 'division manager a')
+    return manager || options[0] || ''
+  }
+
   const toggleRouteDivision = (division) => {
     if (division === mainRouteDivision) return
 
@@ -180,10 +344,16 @@ export default function OPMEndorsed({ currentUser }) {
       if (division === OPM_DIVISION) {
         setOpmAssignee('')
       }
+    } else if (division === OPM_DIVISION && mainRouteDivision !== OPM_DIVISION) {
+      const defaultAssignee = getOpmDefaultAssignee()
+      if (defaultAssignee) {
+        setDivisionAssignment(OPM_DIVISION, defaultAssignee)
+      }
     }
   }
 
   const selectMainDivision = (division) => {
+    const opmAsCfParty = division !== OPM_DIVISION && routeToDivisions.includes(OPM_DIVISION)
     setMainRouteDivision(division)
     setRouteToDivisions(prev => prev.filter(d => d !== division))
     setRouteAssignmentDraft((prev) => {
@@ -193,9 +363,20 @@ export default function OPMEndorsed({ currentUser }) {
         [division]: { position: division === OPM_DIVISION ? String(opmAssignee || '') : '' },
       }
     })
+
+    if (opmAsCfParty) {
+      const defaultAssignee = getOpmDefaultAssignee()
+      if (defaultAssignee) {
+        setDivisionAssignment(OPM_DIVISION, defaultAssignee)
+      }
+    }
   }
 
   const submitRoute = async (method) => {
+    const isOpmReroute = routingMode === 'opm-reroute'
+    const isOpmFinalizeEdit = routingMode === 'opm-finalize-edit'
+    const isOpmOutgoingEdit = isOpmFinalizeEdit || routingMode === 'opm-outgoing-edit'
+    const isPostFinalizeEdit = routingMode === 'opm-outgoing-edit'
     const normalizedMethod = method === 'digital' ? 'digital' : method === 'both' ? 'both' : ''
     if (!normalizedMethod) {
       toast.error('PM routing supports only Physical + Digital or Digital Only.')
@@ -204,6 +385,11 @@ export default function OPMEndorsed({ currentUser }) {
 
     if (!mainRouteDivision) {
       toast.error('Please select one main division.')
+      return
+    }
+
+    if (!routeActionSummary) {
+      toast.error('Please select at least one required action.')
       return
     }
 
@@ -235,7 +421,25 @@ export default function OPMEndorsed({ currentUser }) {
       .join(' | ')
 
     const routedDivisionLabel = finalDivisions.join(', ')
-    const updateOk = await updateDocumentStatus(routingDoc.id, WORKFLOW_STATUS.ROUTED_CONCERNED, {
+    const normalizedFinalDivisions = finalDivisions.map(normalizeDivisionValue)
+    const divisionSet = new Set(normalizedFinalDivisions)
+    const existingReceipts = Array.isArray(routingDoc.divisionReceipts)
+      ? routingDoc.divisionReceipts.filter((entry) => entry?.division)
+      : []
+    const preservedReceipts = (isOpmReroute || isOpmOutgoingEdit)
+      ? existingReceipts.filter((entry) => divisionSet.has(normalizeDivisionValue(entry.division)))
+      : []
+    const statusLabel = isOpmReroute
+      ? WORKFLOW_STATUS.REROUTED
+      : isPostFinalizeEdit
+        ? WORKFLOW_STATUS.ROUTED_CONCERNED
+        : WORKFLOW_STATUS.PENDING_OPM_FINALIZATION
+    const actionLabel = isOpmReroute
+      ? 'Re-routed by OPM Assistant'
+      : isOpmOutgoingEdit
+        ? 'Updated by OPM Assistant (OPM Outgoing Review)'
+        : 'Routed by PM (OPM Outgoing Review)'
+    const updateOk = await updateDocumentStatus(routingDoc.id, statusLabel, {
       targetDivision: mainRouteDivision,
       mainDivision: mainRouteDivision,
       oprDivision: mainRouteDivision,
@@ -247,17 +451,21 @@ export default function OPMEndorsed({ currentUser }) {
         position: mainDivisionPosition,
       },
       currentLocation: finalDivisions.length > 1 ? 'Multiple Divisions' : mainRouteDivision,
-      action: routeAction,
+      action: routeActionSummary,
       pmTransmittalInstructions: routeInstructions,
+      routeTags: draftRouteTags,
       opmAssignee: resolvedOpmAssignee || '',
+      divisionReceipts: preservedReceipts,
+      mainOprViewingAt: '',
+      mainOprViewingBy: '',
       routingHistory: [
         ...(routingDoc.routingHistory || []),
         {
           office: routedDivisionLabel,
-          action: `Routed by PM (${normalizedMethod === 'both' ? 'Physical + Digital' : 'Digital assignment'}) — OPR/Main: ${mainRouteDivision}; Action: ${routeAction}${routeInstructions ? `; Instructions: ${routeInstructions}` : ''}${assignmentSummary ? `; Assignments: ${assignmentSummary}` : ''}`,
+          action: `${actionLabel} (${normalizedMethod === 'both' ? 'Physical + Digital' : 'Digital assignment'}) — OPR/Main: ${mainRouteDivision}; Action: ${routeActionSummary}${routeInstructions ? `; Instructions: ${routeInstructions}` : ''}${assignmentSummary ? `; Assignments: ${assignmentSummary}` : ''}`,
           date: new Date().toISOString().split('T')[0],
           time: new Date().toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' }),
-          user: 'PM',
+          user: currentUser?.name || (isOpmReroute ? 'OPM Assistant' : 'PM'),
           status: 'done',
         },
       ],
@@ -270,7 +478,13 @@ export default function OPMEndorsed({ currentUser }) {
 
     toast.success(
       <div>
-        <strong>Routed to RC/s Concerned: {finalDivisions.length > 1 ? `${finalDivisions.length} divisions` : mainRouteDivision}!</strong><br />
+        <strong>{
+          isOpmReroute
+            ? 'Re-routed to RC/s Concerned:'
+            : isOpmOutgoingEdit
+              ? 'Updated OPM Outgoing (OPM Outgoing Review):'
+              : 'Routed to RC/s Concerned (OPM Outgoing Review):'
+        } {finalDivisions.length > 1 ? `${finalDivisions.length} divisions` : mainRouteDivision}!</strong><br />
         {routingDoc.trackingNumber} ({normalizedMethod === 'both' ? 'Physical + Digital' : 'Digital assignment'})
       </div>,
       { duration: 4000 }
@@ -278,6 +492,50 @@ export default function OPMEndorsed({ currentUser }) {
     setRoutingDoc(null)
     setRouteAssignmentDraft({})
     setOpmAssignee('')
+    setRouteTagKeys([])
+    setCustomTagLabel('')
+    setCustomTagColor(DEFAULT_CUSTOM_TAG_COLOR)
+    setRoutingMode('pm')
+    setRouteDeliveryMethod('both')
+    setRouteActions([TRANSMITTAL_ACTION_OPTIONS[0]])
+  }
+
+  const handleFinalizeRoute = async (doc) => {
+    if (!doc || finalizingDocId) return
+
+    setFinalizingDocId(doc.id)
+    const divisions = Array.isArray(doc.targetDivisions) && doc.targetDivisions.length > 0
+      ? doc.targetDivisions.filter(Boolean)
+      : (doc.targetDivision ? [doc.targetDivision] : [])
+    const resolvedLocation = divisions.length > 1
+      ? 'Multiple Divisions'
+      : (doc.targetDivision || doc.mainDivision || divisions[0] || 'Division')
+    const now = new Date()
+    const updateOk = await updateDocumentStatus(doc.id, WORKFLOW_STATUS.ROUTED_CONCERNED, {
+      currentLocation: resolvedLocation,
+      mainOprViewingAt: '',
+      mainOprViewingBy: '',
+      routingHistory: [
+        ...(doc.routingHistory || []),
+        {
+          office: resolvedLocation,
+          action: 'Finalized by OPM Assistant — released to divisions',
+          date: now.toISOString().split('T')[0],
+          time: now.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' }),
+          user: currentUser?.name || 'OPM Assistant',
+          status: 'done',
+        },
+      ],
+    })
+
+    if (!updateOk) {
+      toast.error('Failed to finalize routing. Please try again.')
+      setFinalizingDocId(null)
+      return
+    }
+
+    toast.success('Routing finalized. Divisions can now view the document.')
+    setFinalizingDocId(null)
   }
 
   // Division options (exclude Records Section only)
@@ -286,7 +544,7 @@ export default function OPMEndorsed({ currentUser }) {
   )
 
   const getRoutedDivisions = (doc) => {
-    if (!(doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED || doc.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED)) {
+    if (!(doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED || doc.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED || doc.status === WORKFLOW_STATUS.REROUTED || doc.status === WORKFLOW_STATUS.PENDING_OPM_FINALIZATION)) {
       return []
     }
     const raw = Array.isArray(doc.targetDivisions) && doc.targetDivisions.length > 0
@@ -303,6 +561,8 @@ export default function OPMEndorsed({ currentUser }) {
       ? doc.divisionReceipts.filter((entry) => entry?.division)
       : []
   }
+
+  const isReceiptAcknowledged = (entry) => Boolean(entry?.verifiedAt || entry?.acknowledgedAt)
 
   return (
     <div className="opm-queue-page">
@@ -334,11 +594,17 @@ export default function OPMEndorsed({ currentUser }) {
                   <>
                     <option value={WORKFLOW_STATUS.OPM_INITIAL_REVIEW}>{getStatusDisplayLabel(WORKFLOW_STATUS.OPM_INITIAL_REVIEW)}</option>
                     <option value={WORKFLOW_STATUS.PM_REVIEW}>{getStatusDisplayLabel(WORKFLOW_STATUS.PM_REVIEW)}</option>
+                    <option value={WORKFLOW_STATUS.PENDING_OPM_FINALIZATION}>{getStatusDisplayLabel(WORKFLOW_STATUS.PENDING_OPM_FINALIZATION)}</option>
+                    <option value={WORKFLOW_STATUS.REROUTED}>{getStatusDisplayLabel(WORKFLOW_STATUS.REROUTED)}</option>
+                    <option value={WORKFLOW_STATUS.ROUTED_CONCERNED}>{getStatusDisplayLabel(WORKFLOW_STATUS.ROUTED_CONCERNED)}</option>
+                    <option value={WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED}>{getStatusDisplayLabel(WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED)}</option>
                   </>
                 ) : (
                   <>
                     <option value={WORKFLOW_STATUS.PM_REVIEW}>{getStatusDisplayLabel(WORKFLOW_STATUS.PM_REVIEW)}</option>
+                    <option value={WORKFLOW_STATUS.PENDING_OPM_FINALIZATION}>{getStatusDisplayLabel(WORKFLOW_STATUS.PENDING_OPM_FINALIZATION)}</option>
                     <option value={WORKFLOW_STATUS.ROUTED_CONCERNED}>{getStatusDisplayLabel(WORKFLOW_STATUS.ROUTED_CONCERNED)}</option>
+                    <option value={WORKFLOW_STATUS.REROUTED}>{getStatusDisplayLabel(WORKFLOW_STATUS.REROUTED)}</option>
                     <option value={WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED}>{getStatusDisplayLabel(WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED)}</option>
                   </>
                 )}
@@ -354,10 +620,10 @@ export default function OPMEndorsed({ currentUser }) {
       </div>
 
       {/* Route Modal */}
-      {routingDoc && isPM && (
+        {routingDoc && (isPM || isAssistant) && (
         <div className="content-card mb-3 opm-route-editor-card" style={{ borderLeft: '4px solid #002868' }}>
           <div className="content-card-header opm-route-editor-header">
-            <h6><i className="bi bi-send me-2 text-primary"></i>Edit Transmittal Slip & Route to Division</h6>
+              <h6><i className="bi bi-send me-2 text-primary"></i>{routeEditorTitle}</h6>
             <Button
               size="sm"
               variant="outline-secondary"
@@ -365,6 +631,12 @@ export default function OPMEndorsed({ currentUser }) {
                 setRoutingDoc(null)
                 setRouteAssignmentDraft({})
                 setOpmAssignee('')
+                setRouteTagKeys([])
+                setCustomTagLabel('')
+                setCustomTagColor(DEFAULT_CUSTOM_TAG_COLOR)
+                setRoutingMode('pm')
+                setRouteDeliveryMethod('both')
+                setRouteActions([TRANSMITTAL_ACTION_OPTIONS[0]])
               }}
             >
               <i className="bi bi-x-lg"></i>
@@ -372,8 +644,12 @@ export default function OPMEndorsed({ currentUser }) {
           </div>
           <div className="content-card-body opm-route-editor-body">
             <div className="mb-3" style={{ fontSize: 13 }}>
-              <strong>{routingDoc.trackingNumber}</strong> — {routingDoc.subject}
-              <br /><span className="text-muted">From: {routingDoc.sender} ({routingDoc.senderAddress})</span>
+              <div className="d-flex flex-wrap align-items-center gap-2">
+                <strong>{routingDoc.trackingNumber}</strong>
+                {renderDocTags(draftRouteTags, 'doc-tag-group-inline')}
+                <span>— {routingDoc.subject}</span>
+              </div>
+              <span className="text-muted">From: {routingDoc.sender} ({routingDoc.senderAddress})</span>
             </div>
             <Row className="g-3 opm-route-editor-grid">
               <Col md={6}>
@@ -386,6 +662,20 @@ export default function OPMEndorsed({ currentUser }) {
                     ))}
                   </Form.Select>
                 </Form.Group>
+                {mainRouteDivision === OPM_DIVISION && (
+                  <Form.Group className="mb-3">
+                    <Form.Label className="fw-semibold" style={{ fontSize: 13 }}>OPM Delegate *</Form.Label>
+                    <Form.Select
+                      value={opmAssignee}
+                      onChange={(e) => setDivisionAssignment(OPM_DIVISION, e.target.value)}
+                    >
+                      <option value="">Select OPM delegate...</option>
+                      {opmPositionOptions.map((position) => (
+                        <option key={position} value={position}>{position}</option>
+                      ))}
+                    </Form.Select>
+                  </Form.Group>
+                )}
                 <Form.Group>
                   <div className="d-flex justify-content-between align-items-center mb-1">
                     <Form.Label className="fw-semibold mb-0" style={{ fontSize: 13 }}>CF Party(ies)</Form.Label>
@@ -429,11 +719,72 @@ export default function OPMEndorsed({ currentUser }) {
               <Col md={6}>
                 <Form.Group className="mb-3">
                   <Form.Label className="fw-semibold" style={{ fontSize: 13 }}>Required Action</Form.Label>
-                  <Form.Select value={routeAction} onChange={e => setRouteAction(e.target.value)}>
-                    {TRANSMITTAL_ACTION_OPTIONS.map((option) => (
-                      <option key={option} value={option}>{option}</option>
+                  <Dropdown autoClose="outside">
+                    <Dropdown.Toggle
+                      variant="outline-secondary"
+                      className="w-100 text-start d-flex justify-content-between align-items-center"
+                    >
+                      <span>{routeActionToggleLabel}</span>
+                    </Dropdown.Toggle>
+                    <Dropdown.Menu className="w-100 p-2" style={{ maxHeight: 220, overflowY: 'auto' }}>
+                      {TRANSMITTAL_ACTION_OPTIONS.map((option) => (
+                        <Form.Check
+                          key={option}
+                          type="checkbox"
+                          id={`route-action-${option}`}
+                          label={option}
+                          checked={routeActions.includes(option)}
+                          onChange={() => toggleRouteAction(option)}
+                          className="mb-1"
+                        />
+                      ))}
+                    </Dropdown.Menu>
+                  </Dropdown>
+                  <div className="mt-2 text-muted" style={{ fontSize: 12 }}>
+                    Selected: {routeActionSummary || 'None'}
+                  </div>
+                </Form.Group>
+                <Form.Group className="mb-3">
+                  <Form.Label className="fw-semibold" style={{ fontSize: 13 }}>Tags</Form.Label>
+                  <div className="doc-tag-picker">
+                    {TAG_PRESETS.map((tag) => (
+                      <Form.Check
+                        key={tag.key}
+                        type="checkbox"
+                        id={`route-tag-${tag.key}`}
+                        label={<span className={getTagClassName(tag)}>{tag.label}</span>}
+                        checked={routeTagKeys.includes(tag.key)}
+                        onChange={() => toggleRouteTag(tag.key)}
+                        className="doc-tag-toggle"
+                      />
                     ))}
-                  </Form.Select>
+                  </div>
+                  <div className="doc-tag-custom-row">
+                    <Form.Control
+                      type="color"
+                      value={customTagColor}
+                      onChange={(e) => setCustomTagColor(e.target.value)}
+                      className="doc-tag-color-input"
+                      title="Custom tag color"
+                    />
+                    <Form.Control
+                      type="text"
+                      value={customTagLabel}
+                      onChange={(e) => setCustomTagLabel(e.target.value)}
+                      placeholder="Custom tag (max 15 chars)"
+                      maxLength={15}
+                      className="doc-tag-label-input"
+                    />
+                    <span className="doc-tag-count">{customTagLabel.trim().length}/15</span>
+                    {customTagLabel.trim() && (
+                      <span
+                        className="doc-tag doc-tag--custom"
+                        style={{ backgroundColor: customTagColor || DEFAULT_CUSTOM_TAG_COLOR }}
+                      >
+                        {customTagLabel.trim()}
+                      </span>
+                    )}
+                  </div>
                 </Form.Group>
               </Col>
               <Col md={12}>
@@ -449,14 +800,43 @@ export default function OPMEndorsed({ currentUser }) {
                 </Form.Group>
               </Col>
             </Row>
-            <div className="d-flex gap-2 mt-3 justify-content-end opm-route-editor-actions">
-              <Button variant="primary" onClick={() => submitRoute('both')}>
-                <i className="bi bi-send-check me-1"></i>Route (Physical + Digital)
-              </Button>
-              <Button variant="outline-secondary" onClick={() => submitRoute('digital')}>
-                <i className="bi bi-cloud-check me-1"></i>Digital Only
-              </Button>
-            </div>
+            {isOpmOutgoingEdit ? (
+              <div className="d-flex flex-wrap gap-3 mt-3 justify-content-between align-items-center opm-route-editor-actions">
+                <div>
+                  <div className="fw-semibold text-muted" style={{ fontSize: 12 }}>Current Selected:</div>
+                  <div className="d-flex flex-column gap-1 mt-1">
+                    <Form.Check
+                      type="radio"
+                      id="opm-update-method-both"
+                      name="opm-update-method"
+                      label={routePrimaryLabel}
+                      checked={routeDeliveryMethod === 'both'}
+                      onChange={() => setRouteDeliveryMethod('both')}
+                    />
+                    <Form.Check
+                      type="radio"
+                      id="opm-update-method-digital"
+                      name="opm-update-method"
+                      label={routeSecondaryLabel}
+                      checked={routeDeliveryMethod === 'digital'}
+                      onChange={() => setRouteDeliveryMethod('digital')}
+                    />
+                  </div>
+                </div>
+                <Button variant="primary" onClick={() => submitRoute(routeDeliveryMethod)}>
+                  <i className="bi bi-save me-1"></i>Save and Proceed
+                </Button>
+              </div>
+            ) : (
+              <div className="d-flex gap-2 mt-3 justify-content-end opm-route-editor-actions">
+                <Button variant="primary" onClick={() => submitRoute('both')}>
+                  <i className="bi bi-send-check me-1"></i>{routePrimaryLabel}
+                </Button>
+                <Button variant="outline-secondary" onClick={() => submitRoute('digital')}>
+                  <i className="bi bi-cloud-check me-1"></i>{routeSecondaryLabel}
+                </Button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -496,8 +876,9 @@ export default function OPMEndorsed({ currentUser }) {
                   (() => {
                     const routed = getRoutedDivisions(doc)
                     const receipts = getDivisionReceipts(doc)
+                    const acknowledgedReceipts = receipts.filter((entry) => isReceiptAcknowledged(entry))
                     const receivedCount = routed.length > 0
-                      ? routed.filter((division) => receipts.some((entry) => entry.division === division)).length
+                      ? routed.filter((division) => acknowledgedReceipts.some((entry) => entry.division === division)).length
                       : 0
                     return (
                   <tr key={doc.id} className="opm-queue-row">
@@ -506,8 +887,14 @@ export default function OPMEndorsed({ currentUser }) {
                         {doc.trackingNumber}
                       </Link>
                     </td>
-                    <td className={isPM ? 'pm-cell-subject' : ''} style={isPM ? undefined : { maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={doc.subject}>
-                      {doc.subject}
+                    <td className={isPM ? 'pm-cell-subject' : ''} title={doc.subject}>
+                      {renderDocTags(doc.routeTags, 'doc-tag-group-table')}
+                      <div
+                        className="doc-subject-text"
+                        style={isPM ? undefined : { maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                      >
+                        {doc.subject}
+                      </div>
                     </td>
                     {isPM ? (
                       <td className="pm-cell-from">
@@ -540,8 +927,30 @@ export default function OPMEndorsed({ currentUser }) {
                         <Link to={`/document/${doc.id}`} className="action-btn pm-action-btn" title="View Details">
                           <i className="bi bi-eye"></i>
                         </Link>
+                        {isAssistant && (doc.status === WORKFLOW_STATUS.PENDING_OPM_FINALIZATION || doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED) && (
+                          <button
+                            className="action-btn pm-action-btn"
+                            title="Edit OPM Outgoing"
+                            onClick={() => handleRouteToDiv(
+                              doc,
+                              doc.status === WORKFLOW_STATUS.PENDING_OPM_FINALIZATION ? 'opm-finalize-edit' : 'opm-outgoing-edit'
+                            )}
+                          >
+                            <i className="bi bi-pencil-square"></i>
+                          </button>
+                        )}
+                        {isAssistant && doc.status === WORKFLOW_STATUS.PENDING_OPM_FINALIZATION && (
+                          <button
+                            className="action-btn pm-action-btn"
+                            title="Proceed to OPR/s"
+                            onClick={() => handleFinalizeRoute(doc)}
+                            disabled={finalizingDocId === doc.id}
+                          >
+                            <i className={finalizingDocId === doc.id ? 'bi bi-hourglass-split' : 'bi bi-check2-circle'}></i>
+                          </button>
+                        )}
                         {isPM && doc.status === WORKFLOW_STATUS.PM_REVIEW && (
-                          <button className="action-btn pm-action-btn" title="Route to Division" onClick={() => handleRouteToDiv(doc)}>
+                          <button className="action-btn pm-action-btn" title="Route to Division" onClick={() => handleRouteToDiv(doc, 'pm')}>
                             <i className="bi bi-send"></i>
                           </button>
                         )}
