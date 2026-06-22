@@ -9,7 +9,7 @@ from models import db, User
 INITIAL_USERS = [
     {'username': 'admin', 'full_name': 'System Administrator', 'role': 'Admin', 'division': None, 'position': 'System Admin'},
     {'username': 'pm', 'full_name': 'Mr. Rey T. Del Moro', 'role': 'PM', 'division': 'Office of the Port Manager (OPM)', 'position': 'Port Manager'},
-    {'username': 'asst', 'full_name': 'Ms. Shirley', 'role': 'OPM Assistant', 'division': 'Office of the Port Manager (OPM)', 'position': 'Executive Assistant A'},
+    {'username': 'asst', 'full_name': 'Ms. Shirley', 'role': 'OPM Secretary', 'division': 'Office of the Port Manager (OPM)', 'position': 'Executive Assistant A'},
     {'username': 'ppd', 'full_name': 'Mr. Emman', 'role': 'Division', 'division': 'Port Police Division (PPD)', 'position': 'Division Manager A'},
     {'username': 'psd', 'full_name': 'Mrs. Arlyn Caraig', 'role': 'Division', 'division': 'Port Services Division (PSD)', 'position': 'Division Manager A'},
     {'username': 'adm', 'full_name': 'Mr. King John Philips T. Cagas', 'role': 'Division', 'division': 'Administrative Division', 'position': 'Division Manager A'},

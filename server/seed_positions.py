@@ -49,7 +49,7 @@ def resolve_role(division, position):
     if position == 'Port Manager':
         return 'PM'
     if division == OPM_DIVISION:
-        return 'OPM Assistant'
+        return 'OPM Secretary'
     if division == 'Records Section':
         return 'Operator'
     return 'Division'

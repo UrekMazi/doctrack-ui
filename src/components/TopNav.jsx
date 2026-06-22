@@ -6,11 +6,12 @@ import { useDocuments } from '../context/DocumentContext'
 import { getRoleDisplayLabel, getStatusDisplayLabel } from '../utils/workflowLabels'
 import { getPendingDocumentsForUser, getRoleQueuePath } from '../utils/pendingWork'
 
-const REMINDER_DELAY_MS = 60 * 1000
+const REMINDER_DELAY_MS = 3 * 60 * 1000
 const REMINDER_SNOOZE_MS = 15 * 60 * 1000
 const PENDING_TOAST_DELAY_MS = 5 * 60 * 1000
 const MAX_STORED_NOTIFICATIONS = 100
-const REMINDER_SOUND_SRC = encodeURI('/audios/Voicetext_tasnotif.mp3')
+const DEFAULT_REMINDER_SOUND_SRC = encodeURI('/audios/Voicetext_tasnotif.mp3')
+const OPM_PM_REMINDER_SOUND_SRC = encodeURI('/audios/opm_pm_notif.wav')
 const REMINDER_SOUND_PULSES_MS = [0, 420, 860]
 const NEW_DOC_SOUND_PULSES_MS = [0, 620]
 const SWIPE_DISMISS_THRESHOLD_PX = 108
@@ -82,6 +83,17 @@ function getStorageKey({ role, division, position, name }) {
   return `doctrack_notifications_${parts.join('__') || 'default'}`
 }
 
+function shouldUseOpmPmSound(role) {
+  const normalizedRole = String(role || '').trim().toLowerCase()
+  if (normalizedRole === 'pm') return true
+  if (!normalizedRole.includes('opm')) return false
+  return normalizedRole.includes('assistant') || normalizedRole.includes('secretary')
+}
+
+function getNotificationSoundSrc(role) {
+  return shouldUseOpmPmSound(role) ? OPM_PM_REMINDER_SOUND_SRC : DEFAULT_REMINDER_SOUND_SRC
+}
+
 function buildNotificationFromDocument(doc, kind = 'new') {
   const docKey = getDocumentKey(doc)
   if (!docKey) return null
@@ -91,7 +103,7 @@ function buildNotificationFromDocument(doc, kind = 'new') {
     ? 'Reminder: please check notifications now and complete this document.'
     : kind === 'pending'
       ? 'Document currently pending in your queue.'
-      : 'New document requires your action.'
+      : 'New document/task routed to you.'
 
   return {
     id: `notif-${docKey}`,
@@ -126,7 +138,7 @@ function parseStoredNotifications(rawValue) {
         subject: String(item.subject || ''),
         statusLabel: String(item.statusLabel || ''),
         dueDateLabel: String(item.dueDateLabel || 'No due date'),
-        message: String(item.message || 'Document requires your action.'),
+        message: String(item.message || 'New document/task routed to you.'),
         kind: String(item.kind || 'new'),
         read: Boolean(item.read),
         createdAt: Number(item.createdAt) || Date.now(),
@@ -292,6 +304,7 @@ export default function TopNav({ currentUser, onLogout }) {
   const pendingSeedRef = useRef(false)
   const audioRef = useRef(null)
   const audioReplayTimeoutIdsRef = useRef([])
+  const unreadNotificationKeysRef = useRef(new Set())
 
   const handleSearch = (e) => {
     e.preventDefault()
@@ -305,6 +318,7 @@ export default function TopNav({ currentUser, onLogout }) {
     ? currentUser.name.split(' ').map(n => n[0]).join('')
     : 'U'
   const displayedRole = getRoleDisplayLabel(role)
+  const notificationSoundSrc = useMemo(() => getNotificationSoundSrc(role), [role])
   const pendingDocuments = useMemo(
     () => getPendingDocumentsForUser(documents, {
       systemRole: role,
@@ -342,6 +356,16 @@ export default function TopNav({ currentUser, onLogout }) {
   useEffect(() => {
     pendingDocumentsRef.current = pendingDocuments
   }, [pendingDocuments])
+
+  useEffect(() => {
+    const unreadKeys = new Set()
+    notifications.forEach((item) => {
+      const key = String(item?.docKey || '').trim()
+      if (!key) return
+      if (!item.read) unreadKeys.add(key)
+    })
+    unreadNotificationKeysRef.current = unreadKeys
+  }, [notifications])
 
   useEffect(() => {
     setShowNotificationMenu(false)
@@ -398,8 +422,8 @@ export default function TopNav({ currentUser, onLogout }) {
 
   const playReminderSound = useCallback((kind = 'new') => {
     try {
-      if (!audioRef.current) {
-        audioRef.current = new Audio(REMINDER_SOUND_SRC)
+      if (!audioRef.current || !audioRef.current.src.includes(notificationSoundSrc)) {
+        audioRef.current = new Audio(notificationSoundSrc)
         audioRef.current.preload = 'auto'
       }
 
@@ -422,7 +446,7 @@ export default function TopNav({ currentUser, onLogout }) {
     } catch {
       // no-op
     }
-  }, [clearAudioReplayTimeouts])
+  }, [clearAudioReplayTimeouts, notificationSoundSrc])
 
   const openRecord = useCallback((record) => {
     if (record?.docId) {
@@ -480,7 +504,11 @@ export default function TopNav({ currentUser, onLogout }) {
     if (!record) return
     if (kind === 'reminder' && isViewingNotifiedDocument(record)) return
     const reminderCadenceMinutes = Math.max(1, Math.round(REMINDER_DELAY_MS / 60000))
+    const reminderCadenceLabel = reminderCadenceMinutes === 1 ? 'minute' : 'minutes'
     const toastDuration = kind === 'reminder' ? 12000 : 10000
+    const subtitle = kind === 'reminder'
+      ? `${record.message} (every ${reminderCadenceMinutes} ${reminderCadenceLabel})`
+      : record.message
 
     if (soundEnabled) {
       playReminderSound(kind)
@@ -502,7 +530,7 @@ export default function TopNav({ currentUser, onLogout }) {
               <div className="task-nag-toast-title">
                 {kind === 'reminder' ? 'Pending Document Reminder' : 'New Document Notification'}
               </div>
-              <div className="task-nag-toast-subtitle">{record.message} (every {reminderCadenceMinutes} minute)</div>
+              <div className="task-nag-toast-subtitle">{subtitle}</div>
             </div>
             <button
               type="button"
@@ -549,6 +577,22 @@ export default function TopNav({ currentUser, onLogout }) {
   }, [activeDocumentId])
 
   useEffect(() => {
+    if (!activeDocumentId) return
+    setNotifications((prev) => {
+      let updated = false
+      const next = prev.map((entry) => {
+        const recordId = String(entry?.docId || '').trim()
+        if (recordId && recordId === activeDocumentId && !entry.read) {
+          updated = true
+          return { ...entry, read: true }
+        }
+        return entry
+      })
+      return updated ? next : prev
+    })
+  }, [activeDocumentId])
+
+  useEffect(() => {
     if (pendingSeedRef.current) return
     if (pendingDocuments.length === 0) return
 
@@ -582,7 +626,8 @@ export default function TopNav({ currentUser, onLogout }) {
     })
 
     newlyPendingDocs.forEach((doc) => {
-      upsertNotification(doc, 'pending')
+      upsertNotification(doc, 'new')
+      showDocumentToast(doc, 'new')
     })
 
     previousPendingKeysRef.current = currentPendingKeys
@@ -600,7 +645,11 @@ export default function TopNav({ currentUser, onLogout }) {
 
         const latestPendingDocs = pendingDocumentsRef.current
         const stalePendingDocs = latestPendingDocs.filter((doc) => getPendingDocumentAgeMs(doc) >= PENDING_TOAST_DELAY_MS)
-        const alertablePendingDocs = stalePendingDocs.filter((doc) => !isViewingNotifiedDocument(doc))
+        const unreadKeys = unreadNotificationKeysRef.current
+        const alertablePendingDocs = stalePendingDocs.filter((doc) => {
+          const key = getDocumentKey(doc)
+          return key && unreadKeys.has(key)
+        }).filter((doc) => !isViewingNotifiedDocument(doc))
 
         if (alertablePendingDocs.length > 0 && !remindersPaused) {
           const topDoc = alertablePendingDocs[0]

@@ -19,6 +19,7 @@ const ROUTE_LOADERS = {
   '/outgoing': [importOutgoingDocuments],
   '/upload': [importDocumentUpload],
   '/opm-assistant': [importOPMEndorsed],
+  '/opm-secretary': [importOPMEndorsed],
   '/pm-routing': [importOPMEndorsed],
   '/opm-endorsed': [importOPMEndorsed],
   '/division-documents': [importDivisionDocuments],
@@ -36,6 +37,7 @@ const PREFIX_ROUTE_LOADERS = [
 const ROLE_PREFETCH_LOADERS = {
   Operator: [importDashboard, importIncomingCommunications, importDocumentDetail, importScanRegister],
   'OPM Assistant': [importOPMEndorsed, importDocumentDetail, importTracking],
+  'OPM Secretary': [importOPMEndorsed, importDocumentDetail, importTracking],
   PM: [importOPMEndorsed, importDocumentDetail, importReports],
   Division: [importDivisionDocuments, importDocumentDetail, importTracking],
   Admin: [importAdminUsers, importReports, importTracking],

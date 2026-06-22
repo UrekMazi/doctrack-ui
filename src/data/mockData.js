@@ -26,7 +26,7 @@ export const DOCUMENT_TYPES = [
 
 export const STATUSES = {
   REGISTERED: 'Registered',
-  FOR_OPM_ASSISTANT_REVIEW: 'For OPM Assistant Review',
+  FOR_OPM_ASSISTANT_REVIEW: 'For OPM Secretary Review',
   ENDORSED_TO_OPM: 'Endorsed to OPM',
   ROUTED_TO_DIVISION: 'Routed to Division',
   RECEIVED_ACKNOWLEDGED: 'Received & Acknowledged',
@@ -38,7 +38,7 @@ export const STATUSES = {
 // User roles for role-based views
 export const ROLES = {
   OPERATOR: 'Operator',
-  OPM_ASSISTANT: 'OPM Assistant',
+  OPM_ASSISTANT: 'OPM Secretary',
   PM: 'PM',
   DIVISION: 'Division',
 }
@@ -47,7 +47,7 @@ export const USERS = [
   { id: 1, name: 'Maria Santos', role: 'Records Officer', division: 'Records Section', username: 'rec1', systemRole: 'Operator' },
   { id: 2, name: 'Juan Dela Cruz', role: 'Records Staff', division: 'Records Section', username: 'rec2', systemRole: 'Operator' },
   { id: 3, name: 'Port Manager', role: 'PM', division: 'Office of the Port Manager (OPM)', username: 'pm', systemRole: 'PM' },
-  { id: 4, name: 'Lorna Villanueva', role: 'OPM Assistant', division: 'Office of the Port Manager (OPM)', username: 'asst', systemRole: 'OPM Assistant' },
+  { id: 4, name: 'Lorna Villanueva', role: 'OPM Secretary', division: 'Office of the Port Manager (OPM)', username: 'asst', systemRole: 'OPM Secretary' },
   { id: 5, name: 'Pedro Garcia', role: 'Division Chief', division: 'Administrative Division', username: 'div1', systemRole: 'Division' },
   { id: 6, name: 'Joshua Rivera', role: 'Division Staff', division: 'Port Police Division (PPD)', username: 'div2', systemRole: 'Division' },
   { id: 7, name: 'Angela Cruz', role: 'Division Staff', division: 'Engineering Services Division (ESD)', username: 'div3', systemRole: 'Division' },

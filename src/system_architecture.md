@@ -48,17 +48,17 @@ Actual flow:
 1. Operator opens `DocumentDetail` for an incoming document in `Registered` status.
 2. Operator uses `Endorse to OPM` modal.
 3. On submit, system updates the document to:
-   - `status: For OPM Assistant Review`
-   - `currentLocation: OPM Assistant Desk`
-   - `targetDivision: OPM Assistant Desk`
+   - `status: For OPM Secretary Review` (legacy: `For OPM Assistant Review`)
+   - `currentLocation: OPM Secretary Desk` (legacy: OPM Assistant Desk)
+   - `targetDivision: OPM Secretary Desk` (legacy: OPM Assistant Desk)
 4. Optional operator remarks are appended to `instructionComments` as Records comments.
 5. `routingHistory` appends handoff entry: submitted for assistant completeness check.
-6. OPM Assistant reviews in queue (`OPMEndorsed` when role is OPM Assistant).
+6. OPM Secretary reviews in queue (`OPMEndorsed` when role is OPM Secretary; legacy OPM Assistant).
 7. Assistant approval transitions document to:
    - `status: Endorsed to OPM`
    - `currentLocation: Office of the Port Manager (OPM)`
    - `targetDivision: Office of the Port Manager (OPM)`
-8. `routingHistory` appends: verified by OPM Assistant and forwarded to OPM.
+8. `routingHistory` appends: verified by OPM Secretary and forwarded to OPM.
 
 ### Stage III - PM Routing (Main Division, Supporting Divisions, Action, Instructions)
 
@@ -232,7 +232,7 @@ Primary implementation:
 As-built access model:
 
 - Operator routes: scan, incoming, outgoing, upload, QR scanner
-- OPM Assistant routes: assistant review queue
+- OPM Secretary routes: secretary review queue (legacy OPM Assistant)
 - PM routes: PM routing queue
 - Division routes: routed documents
 - Admin routes: user management
@@ -349,7 +349,7 @@ Traceability views:
 
 - Stage I intake and registration: src/pages/ScanRegister.jsx
 - Stage II-VI lifecycle operations: src/pages/DocumentDetail.jsx
-- OPM Assistant and PM queue operations: src/pages/OPMEndorsed.jsx
+- OPM Secretary and PM queue operations: src/pages/OPMEndorsed.jsx
 - Division routed queue: src/pages/DivisionDocuments.jsx
 - Shared transmittal source of truth: src/components/IncomingTransmittalSlip.jsx
 - Centralized transmittal print utility: src/utils/incomingTransmittalPrint.js
@@ -362,7 +362,7 @@ Traceability views:
 The following status values are active in the implemented workflow:
 
 - `Registered`
-- `For OPM Assistant Review`
+- `For OPM Secretary Review` (legacy: `For OPM Assistant Review`)
 - `Endorsed to OPM`
 - `Routed to Division`
 - `Received & Acknowledged`

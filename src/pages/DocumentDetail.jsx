@@ -13,7 +13,7 @@ import { useAuth } from '../context/AuthContext'
 import { useDocuments } from '../context/DocumentContext'
 import { inferDocumentDirection } from '../utils/documentDirection'
 import { openIncomingTransmittalPrintWindow } from '../utils/incomingTransmittalPrint'
-import { WORKFLOW_STATUS, getStatusDisplayLabel } from '../utils/workflowLabels'
+import { WORKFLOW_STATUS, getStatusDisplayLabel, isOpmInitialReviewStatus, isOpmRole, normalizeRole } from '../utils/workflowLabels'
 import {
   TAG_PRESETS,
   DEFAULT_CUSTOM_TAG_COLOR,
@@ -223,9 +223,9 @@ function isReceiptViewed(entry) {
 }
 
 function getRoleLabel(currentUser) {
-  const role = currentUser?.systemRole || ''
+  const role = normalizeRole(currentUser?.systemRole || currentUser?.role || '')
   if (role === 'Operator') return 'RECORDS'
-  if (role === 'OPM Assistant') return 'OPM'
+  if (isOpmRole(role)) return 'OPM'
   if (role === 'PM') return 'PM'
   if (role === 'Division') return currentUser?.division || 'Division'
   return role || 'User'
@@ -299,16 +299,16 @@ export default function DocumentDetail({ currentUser }) {
   const [generateTransmittal, setGenerateTransmittal] = useState(true)
   const [endorsingToOpm, setEndorsingToOpm] = useState(false)
   
-  // OPM Assistant UI States
-  const isOpmAssistant = currentUser?.systemRole === 'OPM Assistant'
-  const isForOpmReview = doc?.status === WORKFLOW_STATUS.OPM_INITIAL_REVIEW
-  const canOpmReroute = isIncoming && isOpmAssistant && (
+  // OPM Secretary UI States
+  const isOpmSecretary = isOpmRole(currentUser?.systemRole || currentUser?.role)
+  const isForOpmReview = isOpmInitialReviewStatus(doc?.status)
+  const canOpmReroute = isIncoming && isOpmSecretary && (
     doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED ||
     doc.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED ||
     doc.status === WORKFLOW_STATUS.REROUTED
   )
-  const canOpmFinalize = isIncoming && isOpmAssistant && doc.status === WORKFLOW_STATUS.PENDING_OPM_FINALIZATION
-  const canOpmEditOutgoing = isIncoming && isOpmAssistant && (
+  const canOpmFinalize = isIncoming && isOpmSecretary && doc.status === WORKFLOW_STATUS.PENDING_OPM_FINALIZATION
+  const canOpmEditOutgoing = isIncoming && isOpmSecretary && (
     doc.status === WORKFLOW_STATUS.PENDING_OPM_FINALIZATION ||
     doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED
   )
@@ -486,6 +486,9 @@ export default function DocumentDetail({ currentUser }) {
         const isOpmEndorse = isOpmEndorseRemark(entry)
         const isRecordsEndorse = isRecordsEndorseRemark(entry)
         let cleanComment = entry.comment || ''
+        if (cleanComment.startsWith('[OPM Secretary remarks] ')) {
+          cleanComment = cleanComment.replace('[OPM Secretary remarks] ', '')
+        }
         if (cleanComment.startsWith('[OPM Assistant remarks] ')) {
           cleanComment = cleanComment.replace('[OPM Assistant remarks] ', '')
         }
@@ -538,7 +541,7 @@ export default function DocumentDetail({ currentUser }) {
               title: 'Next Action: Endorse to OPM',
               text: 'Review details, then send this document to OPM for initial review.',
             }
-          : doc.status === WORKFLOW_STATUS.OPM_INITIAL_REVIEW
+          : isOpmInitialReviewStatus(doc?.status)
             ? {
                 tone: 'info',
                 title: 'Next Action: Monitor OPM Review',
@@ -578,7 +581,7 @@ export default function DocumentDetail({ currentUser }) {
         title: 'Registered Only',
         text: 'Document is registered. No division QR receive is required yet.',
       }
-    : (doc.status === WORKFLOW_STATUS.OPM_INITIAL_REVIEW || doc.status === WORKFLOW_STATUS.PM_REVIEW)
+    : (isOpmInitialReviewStatus(doc?.status) || doc.status === WORKFLOW_STATUS.PM_REVIEW)
       ? {
           tone: 'info',
           title: 'OPM/PM Review',
@@ -1383,9 +1386,9 @@ export default function DocumentDetail({ currentUser }) {
         ? WORKFLOW_STATUS.ROUTED_CONCERNED
         : WORKFLOW_STATUS.PENDING_OPM_FINALIZATION
     const actionLabel = isOpmReroute
-      ? 'Re-routed by OPM Assistant'
+      ? 'Re-routed by OPM Secretary'
       : isOpmOutgoingEdit
-        ? 'Updated by OPM Assistant (OPM Outgoing Review)'
+        ? 'Updated by OPM Secretary (OPM Outgoing Review)'
         : 'Routed by PM (OPM Outgoing Review)'
 
     setRoutingToDivision(true)
@@ -1415,7 +1418,7 @@ export default function DocumentDetail({ currentUser }) {
           action: `${actionLabel} (${normalizedMethod === 'both' ? 'Physical + Digital' : 'Digital assignment'}) — OPR/Main: ${mainRouteDivision}; Action: ${routeActionSummary}${routeInstructions ? `; Instructions: ${routeInstructions}` : ''}${assignmentSummary ? `; Assignments: ${assignmentSummary}` : ''}`,
           date: now.toISOString().split('T')[0],
           time: now.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' }),
-          user: currentUser?.name || (isOpmReroute ? 'OPM Assistant' : 'PM'),
+          user: currentUser?.name || (isOpmReroute ? 'OPM Secretary' : 'PM'),
           status: 'done',
         },
       ],
@@ -1472,10 +1475,10 @@ export default function DocumentDetail({ currentUser }) {
         ...(doc.routingHistory || []),
         {
           office: resolvedLocation,
-          action: 'Finalized by OPM Assistant — released to divisions',
+          action: 'Finalized by OPM Secretary — released to divisions',
           date: now.toISOString().split('T')[0],
           time: now.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' }),
-          user: currentUser?.name || 'OPM Assistant',
+          user: currentUser?.name || 'OPM Secretary',
           status: 'done',
         },
       ],
@@ -2277,7 +2280,7 @@ export default function DocumentDetail({ currentUser }) {
 
         {/* Right: Control/Reference # Sticker + Transmittal + Attachments */}
         <Col lg={4}>
-          {isOpmAssistant && isForOpmReview && (
+          {isOpmSecretary && isForOpmReview && (
             <div className="content-card mb-4 doc-detail-security-card" style={{ border: '2px solid #0d6efd', boxShadow: '0 4px 12px rgba(13,110,253,0.15)' }}>
               <div className="content-card-header bg-primary text-white border-bottom-0">
                 <h6 className="mb-0 text-white"><i className="bi bi-shield-lock-fill me-2"></i>OPM Security Verification</h6>
@@ -2477,6 +2480,9 @@ export default function DocumentDetail({ currentUser }) {
                     let text = entry.comment || ''
                     const isOpmEndorse = isOpmEndorseRemark(entry)
                     const isRecordsEndorse = isRecordsEndorseRemark(entry)
+                    if (text.startsWith('[OPM Secretary remarks] ')) {
+                      text = text.replace('[OPM Secretary remarks] ', '')
+                    }
                     if (text.startsWith('[OPM Assistant remarks] ')) {
                       text = text.replace('[OPM Assistant remarks] ', '')
                     }
@@ -3036,7 +3042,7 @@ export default function DocumentDetail({ currentUser }) {
                   {
                     name: 'Office of the Port Manager (OPM)',
                     icon: 'bi-building',
-                    done: endorsingToOpm || doc.status === WORKFLOW_STATUS.OPM_INITIAL_REVIEW || doc.status === WORKFLOW_STATUS.PM_REVIEW || doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED || doc.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED,
+                    done: endorsingToOpm || isOpmInitialReviewStatus(doc?.status) || doc.status === WORKFLOW_STATUS.PM_REVIEW || doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED || doc.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED,
                   },
                   {
                     name: 'Port Manager (PM)',

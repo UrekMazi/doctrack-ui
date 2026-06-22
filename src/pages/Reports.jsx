@@ -5,7 +5,7 @@ import { DOCUMENT_TYPES, DIVISIONS } from '../data/mockData'
 import { useDocuments } from '../context/DocumentContext'
 import { useAuth } from '../context/AuthContext'
 import { inferDocumentDirection } from '../utils/documentDirection'
-import { WORKFLOW_STATUS, getStatusDisplayLabel } from '../utils/workflowLabels'
+import { WORKFLOW_STATUS, getStatusDisplayLabel, normalizeStatus } from '../utils/workflowLabels'
 
 function formatDurationReadable(minsDecimal) {
   if (minsDecimal === null || minsDecimal === undefined || isNaN(minsDecimal)) return '—'
@@ -46,15 +46,17 @@ export default function Reports() {
           ? doc.targetDivisions.join(' | ')
           : doc.targetDivision)
         : (doc.originDivision || doc.targetDivision || ''),
-      status: doc.status,
+      status: normalizeStatus(doc.status),
       remarks: doc.remarks || '',
       registrationDurationMs: Number(doc.registrationDurationMs || 0),
       registrationDurationSeconds: Number(doc.registrationDurationSeconds || 0),
       controlAssignedAt: doc.controlAssignedAt || '',
       registeredAt: doc.registeredAt || '',
       processingTimeMinutes: typeof doc.processingTimeMinutes === 'number' ? doc.processingTimeMinutes : null,
-      outTime: Array.isArray(doc.routingHistory) 
-        ? (doc.routingHistory.find(h => h.office === 'OPM Assistant Desk' || String(h.action).includes('Endorsed to OPM'))?.time || '') 
+      outTime: Array.isArray(doc.routingHistory)
+        ? (doc.routingHistory.find(h => (
+          h.office === 'OPM Assistant Desk' || h.office === 'OPM Secretary Desk' || String(h.action).includes('Endorsed to OPM')
+        ))?.time || '')
         : '',
       direction,
     }

@@ -12,7 +12,7 @@ The system is designed for an air-gapped or localized internal network setting, 
 
 ### Frontend Stack (Client-side)
 * **Core Framework:** React 18, built and bundled via Vite.
-* **Routing:** `react-router-dom` (v6) for handling role-based routing (Operator, OPM Assistant, PM, Division, Admin).
+* **Routing:** `react-router-dom` (v6) for handling role-based routing (Operator, OPM Secretary, PM, Division, Admin; legacy OPM Assistant).
 * **State Management:** React Context API (`AuthContext`, `DocumentContext`) for global caching.
 * **Local Persistence:** `Dexie.js` for IndexedDB, providing offline caching and massive local storage without quota issues.
 * **Styling:** Bootstrap 5, React-Bootstrap, and custom `App.css`.
@@ -39,6 +39,7 @@ The Flask application acts as a JSON REST API and a robust file processing hub.
   * `User`: Stores user data, including hashed passwords, roles, divisions, and positions.
   * `Document`: Defines the document object logic. Uses specialized structural fields (`tracking_number`, `status`, etc.) and dynamic payload storage fields (`extra_data`, `routing_history`, `division_receipts_json`) to safely handle extensible JSON configurations.
 * **`seed.py`**: Initializer to seed default tables/Admin users if necessary.
+* **`backup_db.py`**: One-shot SQLite backup helper for creating timestamped copies before maintenance.
 * **`/routes`**: Includes the application Blueprint endpoints:
   * `auth.py`: Login handling and JWT generation.
   * `users.py`: CRUD operations for system users and role assignment.
@@ -50,7 +51,7 @@ The Flask application acts as a JSON REST API and a robust file processing hub.
 
 The SPA (Single Page Application) built with React presents targeted pages exclusively based on the JWT `systemRole`.
 
-* **`App.jsx`**: The core Router that applies `guardRoute` logic based on user roles (Operator, OPM Assistant, PM, Division, Admin).
+* **`App.jsx`**: The core Router that applies `guardRoute` logic based on user roles (Operator, OPM Secretary, PM, Division, Admin; legacy OPM Assistant). Note: `/opm-secretary` is a direct alias of `/opm-assistant` (both supported).
 * **`/context`**: 
   * `AuthContext.jsx`: Provides login/out functions and exposes the current `user` object to the component tree.
   * `DocumentContext.jsx`: Interacts tightly with both `/api/documents` and `db.js`.
@@ -59,7 +60,7 @@ The SPA (Single Page Application) built with React presents targeted pages exclu
   * `ocrEngine.js`: Front-end fallback/helper script for OCR execution.
 * **`/pages`**: Role-centric views mappings:
   * `ScanRegister.jsx`: Intake process view. Handles OCR reviews, PDF generation, assignment of tracking numbers, and initial REST `/api/documents` post.
-  * `OPMEndorsed.jsx`: Dedicated queue/review page explicitly for OPM Assistant and Port Manager (PM) roles for verifying input logic and generating instructional routing directives.
+  * `OPMEndorsed.jsx`: Dedicated queue/review page explicitly for OPM Secretary and Port Manager (PM) roles (legacy OPM Assistant) for verifying input logic and generating instructional routing directives.
   * `TransmittalSlip.jsx`: Page designed specifically for printing out tracking routing/sticker logic.
   * `QRScanner.jsx`: Allows Operator desk/division users to quick-scan physical QR stickers to update digital states.
   * `Tracking.jsx` / `DocumentDetail.jsx`: Global search and specific history/audit-trail timeline views for reviewing `routingHistory`.
@@ -72,7 +73,7 @@ The SPA (Single Page Application) built with React presents targeted pages exclu
 ### Phase Setup: Roles
 The architecture hinges heavily on system roles:
 1. **Operator**: Initializes tracking and handles physical paper scanning and routing stickers.
-2. **OPM Assistant**: Verifies data entries created by the Records Operator.
+2. **OPM Secretary** (legacy OPM Assistant): Verifies data entries created by the Records Operator.
 3. **PM (Port Manager / Manager)**: The primary action decision-maker dictating instructions and main/supporting target divisions.
 4. **Division**: The endpoint users who receive and sign-off on tracking records.
 5. **Admin**: Manages user access and views overview metrics.
@@ -85,8 +86,8 @@ The architecture hinges heavily on system roles:
    * **File System:** Stamped physical artifacts (like `[tracking-number].pdf`) are saved explicitly through the `/files` endpoint directly to the local machine drive.
 
 2. **OPM Check & Decision (`Stage II & Stage III`)**:
-   * The status becomes `For OPM Assistant Review`.
-   * It digitally proceeds to the OPM Assistant desk queue, then to PM.
+  * The status becomes `For OPM Secretary Review` (legacy: `For OPM Assistant Review`).
+  * It digitally proceeds to the OPM Secretary desk queue (legacy OPM Assistant desk), then to PM.
    * PM applies routing lists (targeting `targetDivision` and multiple `targetDivisions`). 
    * Actions update the SQL `routingHistory` JSON column directly.
 
