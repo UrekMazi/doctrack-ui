@@ -14,6 +14,7 @@ export default function StatusBadge({ status, compact = false }) {
   const classMap = {
     'Registered': 'status-received',
     'For OPM Assistant Review': 'status-processing',
+    'For OPM Secretary Review': 'status-processing',
     'Endorsed to OPM': 'status-processing',
     'Routed to Division': 'status-routing',
     'Pending OPM Finalization': 'status-processing',
@@ -31,6 +32,7 @@ export default function StatusBadge({ status, compact = false }) {
   const iconMap = {
     'Registered': 'bi-check-circle',
     'For OPM Assistant Review': 'bi-person-check',
+    'For OPM Secretary Review': 'bi-person-check',
     'Endorsed to OPM': 'bi-send',
     'Routed to Division': 'bi-arrow-right-circle',
     'Pending OPM Finalization': 'bi-hourglass-split',

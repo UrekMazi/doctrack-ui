@@ -2,9 +2,9 @@ import { useState, useEffect } from 'react'
 import { Row, Col, Form, Button, Modal, Badge } from 'react-bootstrap'
 import { useAuth } from '../context/AuthContext'
 import toast from 'react-hot-toast'
-import { getRoleDisplayLabel } from '../utils/workflowLabels'
+import { getRoleDisplayLabel, isOpmRole, normalizeRole } from '../utils/workflowLabels'
 
-const ROLE_OPTIONS = ['Operator', 'OPM Assistant', 'PM', 'Division', 'Admin']
+const ROLE_OPTIONS = ['Operator', 'OPM Secretary', 'PM', 'Division', 'Admin']
 const DIVISION_OPTIONS = [
   'Records Section',
   'Office of the Port Manager (OPM)',
@@ -76,7 +76,7 @@ export default function AdminUsers() {
 
   const openEdit = (u) => {
     setEditUser(u)
-    setForm({ username: u.username, password: '', fullName: u.fullName, role: u.role, division: u.division || '', position: u.position || '' })
+    setForm({ username: u.username, password: '', fullName: u.fullName, role: normalizeRole(u.role), division: u.division || '', position: u.position || '' })
     setShowModal(true)
   }
 
@@ -112,10 +112,10 @@ export default function AdminUsers() {
   }
 
   const roleBadgeColor = (role) => {
+    if (isOpmRole(role)) return 'info'
     switch (role) {
       case 'Admin': return 'danger'
       case 'PM': return 'primary'
-      case 'OPM Assistant': return 'info'
       case 'Division': return 'success'
       case 'Operator': return 'secondary'
       default: return 'dark'

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { beginFlow, markFlow, endFlow } from '../utils/perfTrace'
 
@@ -8,22 +8,25 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [showPassword, setShowPassword] = useState(false)
+  const [rememberMe, setRememberMe] = useState(false)
+  const usernameStorageKey = 'irris.login.username'
 
-  // Inject animation keyframes on mount
   useEffect(() => {
-    const styleId = 'live-bg-styles'
-    if (!document.getElementById(styleId)) {
-      const style = document.createElement('style')
-      style.id = styleId
-      style.innerHTML = `
-        @keyframes panBg {
-          0% { background-position: 0% 50%; }
-          100% { background-position: 100% 50%; }
-        }
-      `
-      document.head.appendChild(style)
+    const savedUsername = window.localStorage.getItem(usernameStorageKey)
+    if (savedUsername) {
+      setUsername(savedUsername)
+      setRememberMe(true)
     }
   }, [])
+
+  useEffect(() => {
+    if (rememberMe && username.trim()) {
+      window.localStorage.setItem(usernameStorageKey, username.trim())
+      return
+    }
+    window.localStorage.removeItem(usernameStorageKey)
+  }, [rememberMe, username])
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -37,138 +40,136 @@ export default function Login() {
     } catch (err) {
       markFlow('login:error', { message: err?.message || 'unknown' })
       endFlow('failed', { message: err?.message || 'unknown' })
-      setError(err.message)
+      setError(err?.message || 'Login failed. Please try again.')
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <div style={{
-      minHeight: '100vh',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      position: 'relative',
-      overflow: 'hidden',
-      backgroundColor: '#002868',
-      backgroundImage: 'url(/branding/bg_gradient.jpg)',
-      backgroundSize: '150% 150%', // Zoomed in slightly to allow panning
-      backgroundRepeat: 'no-repeat',
-      animation: 'panBg 30s ease-in-out infinite alternate',
-      fontFamily: "'Inter', 'Segoe UI', Arial, sans-serif",
-    }}>
+    <div className="login-shell">
+      <div className="login-card">
+        <div className="login-body">
+          <header className="login-brand">
+            <div className="login-logo">
+              <img
+                src="/branding/PMO%20Logo%20v2.jpg"
+                alt="PMO Logo"
+                onError={(e) => { e.currentTarget.style.display = 'none' }}
+              />
+            </div>
+          </header>
 
-      {/* Glassmorphism Login Card */}
-      <div style={{
-        position: 'relative',
-        zIndex: 1,
-        background: 'rgba(255, 255, 255, 0.92)',
-        backdropFilter: 'blur(12px)',
-        WebkitBackdropFilter: 'blur(12px)',
-        border: '1px solid rgba(255, 255, 255, 0.3)',
-        borderRadius: 24,
-        boxShadow: '0 25px 60px rgba(0, 0, 0, 0.4)',
-        padding: '44px 40px',
-        width: 380,
-        maxWidth: '90vw',
-      }}>
-        <div style={{ textAlign: 'center', marginBottom: 24 }}>
-          <img
-            src="/branding/PMO%20Logo%20v2.jpg"
-            alt="IRRIS Logo"
-            style={{
-              width: 140,
-              height: 140,
-              borderRadius: 16,
-              objectFit: 'contain',
-              background: '#fff',
-              padding: 8,
-              border: '2px solid rgba(0, 40, 104, 0.12)',
-              boxShadow: '0 6px 18px rgba(0,0,0,0.12)'
-            }}
-            onError={(e) => { e.currentTarget.style.display = 'none' }}
-          />
-          <h2 style={{ margin: '18px 0 6px', fontSize: 22, fontWeight: 800, color: '#002868', letterSpacing: '-0.5px' }}>
-            IRRIS
-          </h2>
-          <p style={{ fontSize: 12, color: '#6c757d', margin: 0, fontWeight: 600 }}>
-            Incomming Records and Indorsement System
-          </p>
-        </div>
+          <div className="login-panel">
+            <div
+              className="login-identity"
+              aria-label="IRRIS - Incoming Records Routing and Indorsement System"
+            >
+              <span className="login-word" aria-hidden="true">
+                <span className="login-word-letter">I</span>
+                <span className="login-word-rest">ncoming</span>
+              </span>
+              <span className="login-word" aria-hidden="true">
+                <span className="login-word-letter">R</span>
+                <span className="login-word-rest">ecords</span>
+              </span>
+              <span className="login-word login-word-routing" aria-hidden="true">
+                <span className="login-word-letter">R</span>
+                <span className="login-word-rest">outing and</span>
+              </span>
+              <span className="login-word" aria-hidden="true">
+                <span className="login-word-letter">I</span>
+                <span className="login-word-rest">ndorsement</span>
+              </span>
+              <span className="login-word" aria-hidden="true">
+                <span className="login-word-letter">S</span>
+                <span className="login-word-rest">ystem</span>
+              </span>
+            </div>
 
-        {error && (
-          <div style={{
-            background: '#fde8e8', border: '1px solid #f5c6cb', color: '#842029',
-            borderRadius: 10, padding: '10px 14px', fontSize: 13, marginBottom: 16, textAlign: 'center',
-            fontWeight: 500
-          }}>
-            {error}
+            {error && (
+              <div className="login-error" role="alert">
+                {error}
+              </div>
+            )}
+
+            <form className="login-form" onSubmit={handleSubmit}>
+              <div className="login-field">
+                <label className="login-label" htmlFor="login-username">
+                  Username
+                </label>
+                <input
+                  id="login-username"
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="Enter your username"
+                  required
+                  autoComplete="username"
+                  autoFocus
+                  className="login-input"
+                />
+              </div>
+
+              <div className="login-field">
+                <label className="login-label" htmlFor="login-password">
+                  Password
+                </label>
+                <div className="login-input-wrap">
+                  <input
+                    id="login-password"
+                    type={showPassword ? 'text' : 'password'}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Enter your password"
+                    required
+                    autoComplete="current-password"
+                    className="login-input login-input--with-button"
+                  />
+                  <button
+                    type="button"
+                    className="login-toggle"
+                    onClick={() => setShowPassword((prev) => !prev)}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    aria-pressed={showPassword}
+                    aria-controls="login-password"
+                  >
+                    {showPassword ? (
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path
+                          d="M4.2 4.2a1 1 0 0 1 1.4 0l14.2 14.2a1 1 0 1 1-1.4 1.4l-2.3-2.3A10.3 10.3 0 0 1 12 19.5C6.4 19.5 2.1 15.5 1 12c.5-1.6 1.6-3.4 3.4-5l-1.6-1.6a1 1 0 0 1 0-1.4zm6.1 6.1 3.4 3.4a2.6 2.6 0 0 0-3.4-3.4zM12 4.5c5.6 0 9.9 4 11 7.5-.6 1.8-1.9 3.7-3.9 5.3l-3-3a4.6 4.6 0 0 0-6.4-6.4L7.2 6.5A10.4 10.4 0 0 1 12 4.5z"
+                          fill="currentColor"
+                        />
+                      </svg>
+                    ) : (
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path
+                          d="M12 4.5c5.6 0 9.9 4 11 7.5-1.1 3.5-5.4 7.5-11 7.5S2.1 15.5 1 12c1.1-3.5 5.4-7.5 11-7.5zm0 2c-3.7 0-7 2.4-8.3 5.5 1.3 3.1 4.6 5.5 8.3 5.5s7-2.4 8.3-5.5c-1.3-3.1-4.6-5.5-8.3-5.5zm0 2.2a3.3 3.3 0 1 1 0 6.6 3.3 3.3 0 0 1 0-6.6z"
+                          fill="currentColor"
+                        />
+                      </svg>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              <div className="login-meta">
+                <label className="login-remember">
+                  <input
+                    type="checkbox"
+                    checked={rememberMe}
+                    onChange={(e) => setRememberMe(e.target.checked)}
+                  />
+                  <span>Remember me</span>
+                </label>
+              </div>
+
+              <button className="login-button" type="submit" disabled={loading} aria-busy={loading}>
+                {loading && <span className="login-button-spinner" aria-hidden="true" />}
+                <span>{loading ? 'Signing in...' : 'Sign In'}</span>
+              </button>
+            </form>
           </div>
-        )}
-
-        <form onSubmit={handleSubmit}>
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ fontSize: 12, fontWeight: 700, color: '#495057', display: 'block', marginBottom: 6 }}>
-              Username
-            </label>
-            <input
-              type="text"
-              value={username}
-              onChange={e => setUsername(e.target.value)}
-              placeholder="Enter your username"
-              required
-              autoFocus
-              style={{
-                width: '100%', padding: '12px 14px', border: '1.5px solid #dee2e6', borderRadius: 12,
-                fontSize: 14, outline: 'none', boxSizing: 'border-box', transition: 'border-color 0.2s, box-shadow 0.2s',
-                backgroundColor: 'rgba(255,255,255,0.8)'
-              }}
-              onFocus={e => { e.target.style.borderColor = '#002868'; e.target.style.boxShadow = '0 0 0 3px rgba(0, 40, 104, 0.1)'; e.target.style.backgroundColor = '#fff' }}
-              onBlur={e => { e.target.style.borderColor = '#dee2e6'; e.target.style.boxShadow = 'none'; e.target.style.backgroundColor = 'rgba(255,255,255,0.8)' }}
-            />
-          </div>
-
-          <div style={{ marginBottom: 28 }}>
-            <label style={{ fontSize: 12, fontWeight: 700, color: '#495057', display: 'block', marginBottom: 6 }}>
-              Password
-            </label>
-            <input
-              type="password"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              placeholder="Enter your password"
-              required
-              style={{
-                width: '100%', padding: '12px 14px', border: '1.5px solid #dee2e6', borderRadius: 12,
-                fontSize: 14, outline: 'none', boxSizing: 'border-box', transition: 'border-color 0.2s, box-shadow 0.2s',
-                backgroundColor: 'rgba(255,255,255,0.8)'
-              }}
-              onFocus={e => { e.target.style.borderColor = '#002868'; e.target.style.boxShadow = '0 0 0 3px rgba(0, 40, 104, 0.1)'; e.target.style.backgroundColor = '#fff' }}
-              onBlur={e => { e.target.style.borderColor = '#dee2e6'; e.target.style.boxShadow = 'none'; e.target.style.backgroundColor = 'rgba(255,255,255,0.8)' }}
-            />
-          </div>
-
-          <button
-            type="submit"
-            disabled={loading}
-            style={{
-              width: '100%', padding: '14px', background: 'linear-gradient(135deg, #002868 0%, #001a4d 100%)', color: '#fff',
-              border: 'none', borderRadius: 12, fontSize: 15, fontWeight: 700,
-              cursor: loading ? 'wait' : 'pointer', opacity: loading ? 0.8 : 1,
-              transition: 'transform 0.15s, box-shadow 0.15s',
-              boxShadow: '0 8px 16px rgba(0, 40, 104, 0.25)',
-            }}
-            onMouseEnter={e => { if (!loading) e.target.style.transform = 'translateY(-2px)'; e.target.style.boxShadow = '0 12px 20px rgba(0, 40, 104, 0.35)' }}
-            onMouseLeave={e => { e.target.style.transform = 'translateY(0)'; e.target.style.boxShadow = '0 8px 16px rgba(0, 40, 104, 0.25)' }}
-            onMouseDown={e => { if (!loading) e.target.style.transform = 'translateY(1px)' }}
-          >
-            {loading ? 'Signing in…' : 'Sign In'}
-          </button>
-        </form>
-
-        <div style={{ textAlign: 'center', marginTop: 24, fontSize: 11, color: '#adb5bd', fontWeight: 500 }}>
-          IRRIS v2.0 — Records Process Flow Improvement
         </div>
       </div>
     </div>

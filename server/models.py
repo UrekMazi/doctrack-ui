@@ -14,7 +14,7 @@ class User(db.Model):
     username = db.Column(db.String(80), unique=True, nullable=False)
     password_hash = db.Column(db.String(200), nullable=False)
     full_name = db.Column(db.String(200), nullable=False)
-    role = db.Column(db.String(50), nullable=False)  # Operator, OPM Assistant, PM, Division, Admin
+    role = db.Column(db.String(50), nullable=False)  # Operator, OPM Secretary (legacy OPM Assistant), PM, Division, Admin
     division = db.Column(db.String(100))
     position = db.Column(db.String(100))
     is_active = db.Column(db.Boolean, default=True)

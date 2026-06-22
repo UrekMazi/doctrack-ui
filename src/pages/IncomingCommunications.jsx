@@ -4,7 +4,7 @@ import { Row, Col, Form, Button } from 'react-bootstrap'
 import StatusBadge from '../components/StatusBadge'
 import { DOCUMENT_TYPES } from '../data/mockData'
 import { useDocuments } from '../context/DocumentContext'
-import { WORKFLOW_STATUS, getStatusDisplayLabel } from '../utils/workflowLabels'
+import { WORKFLOW_STATUS, getStatusDisplayLabel, normalizeStatus } from '../utils/workflowLabels'
 
 const INCOMING_FILTERS_STORAGE_KEY = 'incoming-communications-filters-v1'
 
@@ -42,7 +42,8 @@ export default function IncomingCommunications() {
       const parsed = JSON.parse(raw)
       if (!parsed || typeof parsed !== 'object') return
 
-      setStatusFilter(typeof parsed.statusFilter === 'string' ? parsed.statusFilter : '')
+      const nextStatusFilter = typeof parsed.statusFilter === 'string' ? parsed.statusFilter : ''
+      setStatusFilter(normalizeStatus(nextStatusFilter))
       setTypeFilter(typeof parsed.typeFilter === 'string' ? parsed.typeFilter : '')
       setSearchTerm(typeof parsed.searchTerm === 'string' ? parsed.searchTerm : '')
       setQuickFilter(typeof parsed.quickFilter === 'string' ? parsed.quickFilter : 'all')
@@ -92,7 +93,7 @@ export default function IncomingCommunications() {
 
   const filtered = documents.filter(doc => {
     if (!matchesQuickFilter(doc)) return false
-    if (statusFilter && doc.status !== statusFilter) return false
+    if (statusFilter && normalizeStatus(doc.status) !== statusFilter) return false
     if (typeFilter && doc.type !== typeFilter) return false
     if (searchTerm) {
       const q = searchTerm.toLowerCase()
@@ -105,7 +106,10 @@ export default function IncomingCommunications() {
     return true
   })
 
-  const countByStatus = (status) => documents.filter(d => d.status === status).length
+  const countByStatus = (status) => {
+    const resolvedStatus = normalizeStatus(status)
+    return documents.filter((doc) => normalizeStatus(doc.status) === resolvedStatus).length
+  }
   const countByQuickFilter = (preset) => documents.filter((doc) => matchesQuickFilter(doc, preset)).length
 
   const quickFilterOptions = [

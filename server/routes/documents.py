@@ -303,7 +303,7 @@ def get_document_main_division(doc):
 
 def can_user_access_document(doc, user):
     role = normalize_string(user.role)
-    if role in {'Admin', 'Operator', 'PM', 'OPM Assistant'}:
+    if role in {'Admin', 'Operator', 'PM', 'OPM Assistant', 'OPM Secretary'}:
         return True
 
     if role != 'Division':
@@ -330,7 +330,11 @@ def can_user_access_document(doc, user):
     if not user_position:
         return False
 
-    return user_position.lower() == assigned_position.lower()
+    user_position_lower = user_position.lower()
+    if 'division manager' in user_position_lower or user_position_lower in {'terminal head', 'terminal staff'}:
+        return True
+
+    return user_position_lower == assigned_position.lower()
 
 
 @documents_bp.route('', methods=['GET'])

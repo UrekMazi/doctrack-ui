@@ -6,7 +6,7 @@ import { DIVISIONS } from '../data/mockData'
 import { useAuth } from '../context/AuthContext'
 import { useDocuments } from '../context/DocumentContext'
 import toast from 'react-hot-toast'
-import { WORKFLOW_STATUS, getStatusDisplayLabel } from '../utils/workflowLabels'
+import { WORKFLOW_STATUS, getStatusDisplayLabel, isOpmRole, normalizeRole, normalizeStatus } from '../utils/workflowLabels'
 import {
   TAG_PRESETS,
   DEFAULT_CUSTOM_TAG_COLOR,
@@ -102,8 +102,8 @@ function inferInitialRoutingMethod(doc) {
 export default function OPMEndorsed({ currentUser }) {
   const { token } = useAuth()
   const { documents, updateDocumentStatus } = useDocuments()
-  const role = currentUser?.systemRole || 'PM'
-  const isAssistant = role === 'OPM Assistant'
+  const role = normalizeRole(currentUser?.systemRole || currentUser?.role || 'PM')
+  const isAssistant = isOpmRole(role)
   const isPM = role === 'PM'
   const [statusFilter, setStatusFilter] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
@@ -121,6 +121,7 @@ export default function OPMEndorsed({ currentUser }) {
   const [finalizingDocId, setFinalizingDocId] = useState(null)
   const [divisionPositionCatalog, setDivisionPositionCatalog] = useState({})
   const [opmAssignee, setOpmAssignee] = useState('')
+  const resolvedStatusFilter = normalizeStatus(statusFilter)
   const opmPositionOptions = getDivisionPositionOptionsFromCatalog(OPM_DIVISION, divisionPositionCatalog)
   const selectedRouteDivisions = [
     mainRouteDivision,
@@ -235,8 +236,8 @@ export default function OPMEndorsed({ currentUser }) {
     WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED,
     WORKFLOW_STATUS.REROUTED,
   ])
-  if (statusFilter) {
-    assistantStatuses.add(statusFilter)
+  if (resolvedStatusFilter) {
+    assistantStatuses.add(resolvedStatusFilter)
   }
   const pmStatuses = new Set([
     WORKFLOW_STATUS.PM_REVIEW,
@@ -245,14 +246,15 @@ export default function OPMEndorsed({ currentUser }) {
     WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED,
     WORKFLOW_STATUS.REROUTED,
   ])
-  const opmDocs = documents.filter(doc =>
-    isAssistant
-      ? assistantStatuses.has(doc.status)
-      : pmStatuses.has(doc.status)
-  )
+  const opmDocs = documents.filter(doc => {
+    const docStatus = normalizeStatus(doc.status)
+    return isAssistant
+      ? assistantStatuses.has(docStatus)
+      : pmStatuses.has(docStatus)
+  })
 
   const filtered = opmDocs.filter(doc => {
-    if (statusFilter && doc.status !== statusFilter) return false
+    if (resolvedStatusFilter && normalizeStatus(doc.status) !== resolvedStatusFilter) return false
     if (searchTerm) {
       const q = searchTerm.toLowerCase()
       return (
@@ -435,9 +437,9 @@ export default function OPMEndorsed({ currentUser }) {
         ? WORKFLOW_STATUS.ROUTED_CONCERNED
         : WORKFLOW_STATUS.PENDING_OPM_FINALIZATION
     const actionLabel = isOpmReroute
-      ? 'Re-routed by OPM Assistant'
+      ? 'Re-routed by OPM Secretary'
       : isOpmOutgoingEdit
-        ? 'Updated by OPM Assistant (OPM Outgoing Review)'
+        ? 'Updated by OPM Secretary (OPM Outgoing Review)'
         : 'Routed by PM (OPM Outgoing Review)'
     const updateOk = await updateDocumentStatus(routingDoc.id, statusLabel, {
       targetDivision: mainRouteDivision,
@@ -465,7 +467,7 @@ export default function OPMEndorsed({ currentUser }) {
           action: `${actionLabel} (${normalizedMethod === 'both' ? 'Physical + Digital' : 'Digital assignment'}) — OPR/Main: ${mainRouteDivision}; Action: ${routeActionSummary}${routeInstructions ? `; Instructions: ${routeInstructions}` : ''}${assignmentSummary ? `; Assignments: ${assignmentSummary}` : ''}`,
           date: new Date().toISOString().split('T')[0],
           time: new Date().toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' }),
-          user: currentUser?.name || (isOpmReroute ? 'OPM Assistant' : 'PM'),
+          user: currentUser?.name || (isOpmReroute ? 'OPM Secretary' : 'PM'),
           status: 'done',
         },
       ],
@@ -519,10 +521,10 @@ export default function OPMEndorsed({ currentUser }) {
         ...(doc.routingHistory || []),
         {
           office: resolvedLocation,
-          action: 'Finalized by OPM Assistant — released to divisions',
+          action: 'Finalized by OPM Secretary — released to divisions',
           date: now.toISOString().split('T')[0],
           time: now.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' }),
-          user: currentUser?.name || 'OPM Assistant',
+          user: currentUser?.name || 'OPM Secretary',
           status: 'done',
         },
       ],
@@ -567,7 +569,7 @@ export default function OPMEndorsed({ currentUser }) {
   return (
     <div className="opm-queue-page">
       <div className="page-header opm-queue-header">
-        <h4>{isAssistant ? 'Office of the Port Manager Review Queue' : 'PM Routing Queue'}</h4>
+        <h4>{isAssistant ? 'OPM Secretary Review Queue' : 'PM Routing Queue'}</h4>
         <p>
           {isAssistant
             ? 'Verify files, transmittal details, and all attachments at OPM before forwarding to PM.'

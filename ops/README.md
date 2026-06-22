@@ -38,6 +38,30 @@ Example custom options:
 powershell -ExecutionPolicy Bypass -File .\ops\backup-doctrack.ps1 -BackupRoot "E:\DocTrackBackups" -RetentionDays 14 -StorageDrive "D:" -StorageFolder "DocTrack Files"
 ```
 
+### 3a) Backup database only (quick copy)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\ops\backup-db.ps1
+```
+
+Optional output path:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\ops\backup-db.ps1 -OutputPath "C:\DocTrackBackups\doctrack.db.bak"
+```
+
+### 3b) Post-migration legacy OPM report (CSV)
+
+```powershell
+python server\report_legacy_opm.py
+```
+
+Optional output path:
+
+```powershell
+python server\report_legacy_opm.py --output "C:\DocTrackBackups\legacy_opm_report.csv"
+```
+
 ## 4) Configure automatic daily backup (recommended)
 
 ```powershell

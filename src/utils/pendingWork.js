@@ -1,4 +1,4 @@
-import { WORKFLOW_STATUS } from './workflowLabels'
+import { WORKFLOW_STATUS, isOpmInitialReviewStatus, isOpmRole, normalizeRole } from './workflowLabels'
 
 function normalizeText(value) {
   return String(value || '').trim().toLowerCase()
@@ -75,10 +75,10 @@ function getPrioritySortValue(doc) {
 }
 
 export function getRoleQueuePath(role) {
-  const cleanRole = String(role || '').trim()
+  const cleanRole = normalizeRole(role)
 
   if (cleanRole === 'Operator') return '/incoming'
-  if (cleanRole === 'OPM Assistant') return '/opm-assistant'
+  if (isOpmRole(cleanRole)) return '/opm-secretary'
   if (cleanRole === 'PM') return '/pm-routing'
   if (cleanRole === 'Division') return '/division-documents'
   if (cleanRole === 'Admin') return '/reports'
@@ -86,15 +86,15 @@ export function getRoleQueuePath(role) {
 }
 
 export function getPendingDocumentsForUser(documents, currentUser) {
-  const role = String(currentUser?.systemRole || currentUser?.role || '').trim()
+  const role = normalizeRole(currentUser?.systemRole || currentUser?.role || '')
   const list = Array.isArray(documents) ? documents : []
 
   let filtered = []
 
   if (role === 'Operator') {
     filtered = list.filter((doc) => doc?.status === WORKFLOW_STATUS.REGISTERED)
-  } else if (role === 'OPM Assistant') {
-    filtered = list.filter((doc) => doc?.status === WORKFLOW_STATUS.OPM_INITIAL_REVIEW)
+  } else if (isOpmRole(role)) {
+    filtered = list.filter((doc) => isOpmInitialReviewStatus(doc?.status))
   } else if (role === 'PM') {
     filtered = list.filter((doc) => doc?.status === WORKFLOW_STATUS.PM_REVIEW)
   } else if (role === 'Division') {

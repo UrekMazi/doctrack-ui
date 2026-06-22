@@ -1,8 +1,12 @@
 import { NavLink } from 'react-router-dom'
 import { prefetchRoute } from '../utils/routePrefetch'
+import { isOpmRole, normalizeRole } from '../utils/workflowLabels'
 
 export default function Sidebar({ currentUser }) {
-  const role = currentUser?.systemRole || 'Operator'
+  const role = normalizeRole(currentUser?.systemRole || currentUser?.role || 'Operator')
+  const normalizeText = (value) => String(value || '').trim().toLowerCase()
+  const isDivisionManager = role === 'Division' && normalizeText(currentUser?.position).includes('division manager')
+  const isOperator = role === 'Operator'
   const linkPrefetchProps = (path) => ({
     onMouseEnter: () => prefetchRoute(path),
     onFocus: () => prefetchRoute(path),
@@ -55,7 +59,7 @@ export default function Sidebar({ currentUser }) {
             </NavLink>
             <NavLink to="/tracking" className={({ isActive }) => `sidebar-link sidebar-link-priority ${isActive ? 'active' : ''}`} {...linkPrefetchProps('/tracking')}>
               <i className="bi bi-search"></i>
-              Track Document
+              {isOperator ? 'Track Document' : 'Accomplished'}
             </NavLink>
             <NavLink to="/qr-scanner" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`} {...linkPrefetchProps('/qr-scanner')}>
               <i className="bi bi-qr-code-scan"></i>
@@ -68,17 +72,17 @@ export default function Sidebar({ currentUser }) {
           </>
         )}
 
-        {/* OPM Assistant */}
-        {role === 'OPM Assistant' && (
+        {/* OPM Secretary */}
+        {isOpmRole(role) && (
           <>
             <div className="sidebar-section" style={{ marginTop: 16 }}>Office of the Port Manager</div>
-            <NavLink to="/opm-assistant" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`} {...linkPrefetchProps('/opm-assistant')}>
+            <NavLink to="/opm-secretary" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`} {...linkPrefetchProps('/opm-secretary')}>
               <i className="bi bi-person-check-fill"></i>
-              OPM Review Queue
+              OPM Secretary Review Queue
             </NavLink>
             <NavLink to="/tracking" className={({ isActive }) => `sidebar-link sidebar-link-priority ${isActive ? 'active' : ''}`} {...linkPrefetchProps('/tracking')}>
               <i className="bi bi-search"></i>
-              Track Document
+              {isOperator ? 'Track Document' : 'Accomplished'}
             </NavLink>
           </>
         )}
@@ -93,7 +97,7 @@ export default function Sidebar({ currentUser }) {
             </NavLink>
             <NavLink to="/tracking" className={({ isActive }) => `sidebar-link sidebar-link-priority ${isActive ? 'active' : ''}`} {...linkPrefetchProps('/tracking')}>
               <i className="bi bi-search"></i>
-              Track Document
+              {isOperator ? 'Track Document' : (isDivisionManager ? 'Accomplished' : 'Accomplished')}
             </NavLink>
             <NavLink to="/reports" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`} {...linkPrefetchProps('/reports')}>
               <i className="bi bi-journal-text"></i>
@@ -112,7 +116,7 @@ export default function Sidebar({ currentUser }) {
             </NavLink>
             <NavLink to="/tracking" className={({ isActive }) => `sidebar-link sidebar-link-priority ${isActive ? 'active' : ''}`} {...linkPrefetchProps('/tracking')}>
               <i className="bi bi-search"></i>
-              Track Document
+              {isDivisionManager ? 'Accomplished' : 'Track Document'}
             </NavLink>
           </>
         )}
@@ -131,7 +135,7 @@ export default function Sidebar({ currentUser }) {
             </NavLink>
             <NavLink to="/tracking" className={({ isActive }) => `sidebar-link sidebar-link-priority ${isActive ? 'active' : ''}`} {...linkPrefetchProps('/tracking')}>
               <i className="bi bi-search"></i>
-              Track Document
+              {isOperator ? 'Track Document' : 'Accomplished'}
             </NavLink>
           </>
         )}

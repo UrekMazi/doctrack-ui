@@ -5,6 +5,7 @@ import { DocumentProvider } from './context/DocumentContext'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import Layout from './components/Layout'
 import Login from './pages/Login'
+import { normalizeRole, OPM_ROLE_INTERNAL, isOpmRole } from './utils/workflowLabels'
 import {
   importDashboard,
   importIncomingCommunications,
@@ -50,7 +51,8 @@ function RouteFallback() {
 
 function AppRoutes() {
   const { user, logout, loading } = useAuth()
-  const role = user?.role || ''
+  const rawRole = user?.role || ''
+  const role = normalizeRole(rawRole)
   const prefetchedRoleRef = useRef('')
 
   useEffect(() => {
@@ -123,13 +125,14 @@ function AppRoutes() {
     )
   }
 
-  // Map backend role names to the existing systemRole names used by the frontend
+  // Normalize backend role names to the frontend role naming.
   const currentUser = {
     ...user,
-    systemRole: user.role,
+    role,
+    systemRole: role,
     name: user.fullName,
   }
-  const defaultHomeRoute = role === 'OPM Assistant' ? '/opm-assistant' : '/'
+  const defaultHomeRoute = isOpmRole(role) ? '/opm-secretary' : '/'
 
   const canAccess = (allowedRoles) => allowedRoles.includes(role)
   const guardRoute = (allowedRoles, element) => (
@@ -160,8 +163,9 @@ function AppRoutes() {
             <Route path="/incoming" element={guardRoute(['Operator'], <IncomingCommunications />)} />
             <Route path="/outgoing" element={guardRoute(['Operator'], <OutgoingDocuments />)} />
             <Route path="/upload" element={guardRoute(['Operator'], <DocumentUpload />)} />
-            {/* OPM Assistant + PM routes */}
-            <Route path="/opm-assistant" element={guardRoute(['OPM Assistant'], <OPMEndorsed currentUser={currentUser} />)} />
+            {/* OPM Secretary + PM routes */}
+            <Route path="/opm-assistant" element={guardRoute([OPM_ROLE_INTERNAL], <OPMEndorsed currentUser={currentUser} />)} />
+            <Route path="/opm-secretary" element={guardRoute([OPM_ROLE_INTERNAL], <OPMEndorsed currentUser={currentUser} />)} />
             <Route path="/pm-routing" element={guardRoute(['PM'], <OPMEndorsed currentUser={currentUser} />)} />
             <Route path="/opm-endorsed" element={guardRoute(['PM'], <OPMEndorsed currentUser={currentUser} />)} />
             {/* Division route */}

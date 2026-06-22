@@ -1,8 +1,9 @@
 import { Link } from 'react-router-dom'
 import { Row, Col } from 'react-bootstrap'
 import StatusBadge from '../components/StatusBadge'
+import RecordsDashboard from '../components/RecordsDashboard'
 import { useDocuments } from '../context/DocumentContext'
-import { WORKFLOW_STATUS, OPM_ROLE_DISPLAY, getStatusDisplayLabel } from '../utils/workflowLabels'
+import { WORKFLOW_STATUS, OPM_ROLE_DISPLAY, getStatusDisplayLabel, isOpmInitialReviewStatus, isOpmRole, normalizeRole } from '../utils/workflowLabels'
 
 const formatDateInManila = (dateInput) => {
   const date = dateInput instanceof Date ? dateInput : new Date(dateInput)
@@ -73,7 +74,8 @@ const formatElapsedAge = (timestampMs, nowMs = Date.now()) => {
 
 export default function Dashboard({ currentUser }) {
   const { documents } = useDocuments()
-  const role = currentUser?.systemRole || 'Operator'
+  const role = normalizeRole(currentUser?.systemRole || currentUser?.role || 'Operator')
+  const isOpm = isOpmRole(role)
   const todayKey = formatDateInManila(new Date())
   const nowMs = Date.now()
   const dailyDocuments = documents.filter(doc => getOperationalDate(doc) === todayKey)
@@ -100,7 +102,9 @@ export default function Dashboard({ currentUser }) {
   const getKanbanCount = (statusKey) => (
     statusKey === WORKFLOW_STATUS.ROUTED_CONCERNED
       ? dailyDocuments.filter(d => isRoutedStatus(d.status)).length
-      : dailyDocuments.filter(d => d.status === statusKey).length
+      : statusKey === WORKFLOW_STATUS.OPM_INITIAL_REVIEW
+        ? dailyDocuments.filter(d => isOpmInitialReviewStatus(d.status)).length
+        : dailyDocuments.filter(d => d.status === statusKey).length
   )
 
   const operatorKanbanColumns = [
@@ -113,10 +117,83 @@ export default function Dashboard({ currentUser }) {
 
   const kanbanByStatus = operatorKanbanColumns.reduce((acc, col) => {
     acc[col.key] = dailyDocuments
-      .filter(d => (col.key === WORKFLOW_STATUS.ROUTED_CONCERNED ? isRoutedStatus(d.status) : d.status === col.key))
+      .filter(d => (
+        col.key === WORKFLOW_STATUS.ROUTED_CONCERNED
+          ? isRoutedStatus(d.status)
+          : col.key === WORKFLOW_STATUS.OPM_INITIAL_REVIEW
+            ? isOpmInitialReviewStatus(d.status)
+            : d.status === col.key
+      ))
       .slice(0, 6)
     return acc
   }, {})
+
+  // Records dashboard: compute routed-to-division documents by OPM (secretary/assistant)
+  const routedByOpm = documents.filter(d => (
+    (d.status === WORKFLOW_STATUS.ROUTED_CONCERNED || d.status === WORKFLOW_STATUS.REROUTED || d.status === WORKFLOW_STATUS.PENDING_OPM_FINALIZATION)
+    && Array.isArray(d.routingHistory) && d.routingHistory.some(s => String(s.office || s.user || '').toLowerCase().includes('opm'))
+  ))
+
+  const now = Date.now()
+  const summarizeRouted = (docs) => {
+    let total = docs.length
+    let completed = 0
+    let wip = 0
+    let overdue = 0
+    let wipPrev = 0
+
+    const rows = docs.map(d => {
+      // find routing step where it moved to division
+      const routeStep = (d.routingHistory || []).slice().reverse().find(s => /route|rout/i.test(String(s.action || '')) || /rout/i.test(String(s.office || '')))
+      const routedAt = routeStep ? (toTimestampMs(routeStep.createdAt || routeStep.timestamp || routeStep.date || '') || toTimestampMs(d.registeredAt || d.createdAt || '')) : (toTimestampMs(d.registeredAt || d.createdAt || ''))
+      const completedAt = d.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED ? (toTimestampMs(d.completedAt || d.dateCompleted || '')) : 0
+      const dueDateTs = toTimestampMs(d.dueDate || d.targetDueDate || '')
+      const isCompleted = d.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED
+      const daysElapsed = isCompleted ? (completedAt ? Math.max(0, Math.floor((completedAt - routedAt) / 86400000)) : null) : Math.max(0, Math.floor((now - routedAt) / 86400000))
+      const isOverdue = !isCompleted && dueDateTs && now > dueDateTs
+      const overdueDays = isOverdue ? Math.max(0, Math.floor((now - dueDateTs) / 86400000)) : 0
+
+      if (isCompleted) completed++
+      else {
+        wip++
+        // wipPrev: routed before this month (not completed)
+        const monthKey = new Date().toISOString().slice(0,7)
+        const routedMonth = new Date(routedAt).toISOString().slice(0,7)
+        if (routedMonth < monthKey) wipPrev++
+      }
+      if (isOverdue) overdue++
+
+      return {
+        id: d.id,
+        trackingNumber: d.trackingNumber,
+        division: d.targetDivision || (d.routingHistory && d.routingHistory.slice().reverse()[0]?.office) || d.senderAddress,
+        status: d.status,
+        dateRouted: routedAt ? new Date(routedAt).toISOString() : '',
+        dateCompleted: completedAt ? new Date(completedAt).toISOString() : '',
+        daysElapsed,
+        dueDate: dueDateTs ? new Date(dueDateTs).toISOString() : null,
+        isOverdue,
+        overdueDays,
+      }
+    })
+
+    return { total, completed, wip, wipPrev, overdue, rows }
+  }
+
+  const routedSummary = summarizeRouted(routedByOpm)
+
+  // status overview by division
+  const divisionKeys = Array.from(new Set(routedByOpm.map(d => d.targetDivision || d.senderAddress || 'Unknown')))
+  const statusOverviewData = divisionKeys.map(div => {
+    const group = routedByOpm.filter(d => (d.targetDivision || d.senderAddress || 'Unknown') === div)
+    const wip = group.filter(g => g.status !== WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED).length
+    const completed = group.filter(g => g.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED).length
+    const overdue = group.filter(g => {
+      const due = toTimestampMs(g.dueDate || g.targetDueDate || '')
+      return due && Date.now() > due && g.status !== WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED
+    }).length
+    return { division: div, wip, completed, overdue }
+  })
 
   // Operator sees all documents
   const recentIncoming = documents.slice(0, 5)
@@ -170,14 +247,14 @@ export default function Dashboard({ currentUser }) {
   ).slice(0, 5)
   const pendingForPM = dailyDocuments.filter(d => d.status === WORKFLOW_STATUS.PM_REVIEW).length
 
-  // OPM Assistant queue
+  // OPM Secretary queue
   const assistantDocs = documents.filter(d =>
-    d.status === WORKFLOW_STATUS.OPM_INITIAL_REVIEW ||
+    isOpmInitialReviewStatus(d.status) ||
     d.status === WORKFLOW_STATUS.PM_REVIEW ||
     d.status === WORKFLOW_STATUS.PENDING_OPM_FINALIZATION ||
     d.status === WORKFLOW_STATUS.REROUTED
   ).slice(0, 5)
-  const pendingAssistant = dailyDocuments.filter(d => d.status === WORKFLOW_STATUS.OPM_INITIAL_REVIEW).length
+  const pendingAssistant = dailyDocuments.filter(d => isOpmInitialReviewStatus(d.status)).length
   const reviewedAssistant = dailyDocuments.filter(d => d.status === WORKFLOW_STATUS.PM_REVIEW).length
 
   // Division sees their docs
@@ -192,7 +269,7 @@ export default function Dashboard({ currentUser }) {
 
   const roleLabels = {
     Operator: { title: 'Operator Dashboard', desc: 'Records Section — Scan, Register & Endorse documents' },
-    'OPM Assistant': { title: `${OPM_ROLE_DISPLAY} Dashboard`, desc: 'Initial OPM review and verification before forwarding to PM.' },
+    'OPM Secretary': { title: `${OPM_ROLE_DISPLAY} Dashboard`, desc: 'Initial OPM review and verification before forwarding to PM.' },
     PM: { title: 'PM Dashboard', desc: 'Port Manager — Route endorsed documents to divisions' },
     Division: { title: 'Division Dashboard', desc: `${currentUser?.division || 'Division'} — Receive & acknowledge routed documents` },
   }
@@ -204,215 +281,13 @@ export default function Dashboard({ currentUser }) {
         <p>{roleLabels[role]?.desc || 'Overview'}</p>
       </div>
 
-      {/* OPERATOR Dashboard */}
+      {/* OPERATOR Dashboard - Reworked Records view */}
       {role === 'Operator' && (
-        <>
-          <Row className="g-3 mb-3">
-            <Col lg={12}>
-              <div className="content-card h-100 dashboard-kanban-card">
-                <div className="content-card-header dashboard-kanban-header">
-                  <h6><i className="bi bi-kanban-fill me-2 text-primary"></i>Document Flow Kanban</h6>
-                  <span style={{ fontSize: 12, color: '#6c757d' }}>Live status by process stage</span>
-                </div>
-                <div className="content-card-body dashboard-kanban-body">
-                  <Row className="g-2 align-items-stretch dashboard-kanban-grid">
-                    {operatorKanbanColumns.map(col => (
-                      <Col key={col.key} xl={2} lg={4} md={6}>
-                        <div className="dashboard-kanban-lane" style={{
-                          border: 'none',
-                          boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
-                          borderRadius: 16,
-                          background: '#f0f2f5',
-                          minHeight: 240,
-                          display: 'flex',
-                          flexDirection: 'column',
-                          overflow: 'hidden'
-                        }}>
-                          <div className="dashboard-kanban-lane-head" style={{
-                            padding: '12px 14px',
-                            background: '#ffffff',
-                            borderTop: `4px solid ${col.accent}`,
-                          }}>
-                            <div style={{ fontSize: 12, fontWeight: 700, color: '#212529' }}>{col.title}</div>
-                            <div className="d-flex justify-content-between align-items-center">
-                              <span style={{ fontSize: 11, color: '#6c757d' }}>{col.subtitle}</span>
-                              <span className="badge" style={{ background: col.accent, color: '#fff', fontSize: 10 }}>
-                                {getKanbanCount(col.key)}
-                              </span>
-                            </div>
-                          </div>
-                          <div className="dashboard-kanban-lane-body" style={{ padding: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                            {kanbanByStatus[col.key].length === 0 ? (
-                              <div style={{ fontSize: 11, color: '#adb5bd', textAlign: 'center', paddingTop: 20 }}>
-                                No documents
-                              </div>
-                            ) : (
-                              kanbanByStatus[col.key].map(doc => (
-                                <Link
-                                  key={doc.id}
-                                  to={`/document/${doc.id}`}
-                                  className="dashboard-kanban-item text-decoration-none"
-                                  style={{
-                                    border: '1px solid #dee2e6',
-                                    borderRadius: 8,
-                                    background: '#fff',
-                                    padding: '7px 8px',
-                                    display: 'block',
-                                  }}
-                                >
-                                  <div className="tracking-number" style={{ fontSize: 10.5, marginBottom: 2 }}>{doc.trackingNumber}</div>
-                                  <div style={{ fontSize: 11.5, color: '#212529', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={doc.subject}>
-                                    {doc.subject}
-                                  </div>
-                                  <div style={{ fontSize: 10.5, color: '#6c757d', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                    {doc.currentLocation || doc.targetDivision || 'N/A'}
-                                  </div>
-                                </Link>
-                              ))
-                            )}
-                          </div>
-                        </div>
-                      </Col>
-                    ))}
-                    <Col xl={2} lg={4} md={6}>
-                      <div className="d-flex flex-column gap-2 h-100 dashboard-metric-stack" style={{ minHeight: 240 }}>
-                        <div className="stat-card dashboard-metric-card" style={{ flex: 1, border: pastIncompleteDocuments.length > 0 ? '1px solid #dc3545' : 'none', background: pastIncompleteDocuments.length > 0 ? '#fff5f5' : '#fff' }}>
-                          <div className="text-center py-2">
-                            <div style={{ fontSize: 26, fontWeight: 700, color: pastIncompleteDocuments.length > 0 ? '#dc3545' : '#6c757d', lineHeight: 1 }}>
-                              {pastIncompleteDocuments.length}
-                            </div>
-                            <div className="stat-card-label mt-2" style={{ color: pastIncompleteDocuments.length > 0 ? '#dc3545' : '#6c757d' }}>
-                              {pastIncompleteDocuments.length > 0 ? <><i className="bi bi-exclamation-triangle-fill me-1"></i>Overdue Unendorsed</> : 'No Overdue Backlog'}
-                              <div style={{ fontSize: 10, opacity: 0.8, marginTop: 2 }}>(Received before today)</div>
-                            </div>
-                          </div>
-                        </div>
-                        <div className="stat-card dashboard-metric-card" style={{ flex: 1 }}>
-                          <div className="text-center py-2">
-                            <div style={{ fontSize: 26, fontWeight: 700, color: '#002868', lineHeight: 1 }}>
-                              {todaysReceivedAndEndorsed.length} <span style={{ fontSize: 16, color: '#6c757d', fontWeight: 500 }}>/ {todaysRegisteredDocuments.length}</span>
-                            </div>
-                            <div className="stat-card-label mt-2">Endorsed / Received Today</div>
-                          </div>
-                        </div>
-                      </div>
-                    </Col>
-                  </Row>
-                </div>
-              </div>
-            </Col>
-          </Row>
-
-          <Row className="g-3">
-            <Col lg={8}>
-              <div className="content-card dashboard-recent-card">
-                <div className="content-card-header">
-                  <h6><i className="bi bi-inbox me-2 text-primary"></i>Recent Incoming Communications</h6>
-                  <Link to="/incoming" className="btn btn-sm btn-outline-primary">View All</Link>
-                </div>
-                <div className="table-responsive">
-                  <table className="table doc-table dashboard-recent-table mb-0">
-                    <thead>
-                      <tr>
-                        <th>Control/Reference #</th>
-                        <th>Subject</th>
-                        <th>Sender</th>
-                        <th>Status</th>
-                        <th>Date</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {recentIncoming.map(doc => (
-                        <tr key={doc.id}>
-                          <td>
-                            <Link to={`/document/${doc.id}`} className="tracking-number text-decoration-none">
-                              {doc.trackingNumber}
-                            </Link>
-                          </td>
-                          <td style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {doc.subject}
-                          </td>
-                          <td style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {doc.sender}
-                          </td>
-                          <td><StatusBadge status={doc.status} /></td>
-                          <td style={{ whiteSpace: 'nowrap', fontSize: 13 }}>{doc.dateReceived}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </Col>
-            <Col lg={4}>
-              <div className="content-card dashboard-activity-card">
-                <div className="content-card-header">
-                  <h6><i className="bi bi-clock-history me-2 text-secondary"></i>Recent Activity</h6>
-                </div>
-                <div className="content-card-body dashboard-activity-body" style={{ fontSize: 13 }}>
-                  {operatorActivityFeed.length === 0 ? (
-                    <div style={{ fontSize: 12, color: '#6c757d' }}>No recent activity yet.</div>
-                  ) : (
-                    operatorActivityFeed.map((item) => (
-                      <Link key={item.key} to={`/document/${item.docId}`} className="dashboard-activity-link text-decoration-none d-block mb-2">
-                        <div
-                          className="dashboard-activity-item border rounded p-2"
-                          style={{
-                            background: item.overduePending ? '#fff5f5' : (item.pendingEndorsement ? '#fffaf0' : '#f8f9fa'),
-                            borderColor: item.overduePending ? '#f5c2c7' : '#e9ecef',
-                          }}
-                        >
-                          <div className="d-flex justify-content-between align-items-center mb-1">
-                            <span className="tracking-number" style={{ fontSize: 11 }}>{item.trackingNumber}</span>
-                            <span style={{ fontSize: 11, color: item.overduePending ? '#dc3545' : '#6c757d', fontWeight: 600 }}>
-                              {formatElapsedAge(item.timestampMs, nowMs)}
-                            </span>
-                          </div>
-                          <div
-                            style={{
-                              fontSize: 12,
-                              color: '#212529',
-                              fontWeight: 600,
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                              whiteSpace: 'nowrap',
-                            }}
-                            title={item.actionText}
-                          >
-                            {item.actionText}
-                          </div>
-                          <div className="d-flex justify-content-between align-items-center mt-1">
-                            <span
-                              style={{
-                                fontSize: 11,
-                                color: '#6c757d',
-                                maxWidth: '55%',
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                whiteSpace: 'nowrap',
-                              }}
-                              title={item.actor}
-                            >
-                              {item.actor}
-                            </span>
-                            <span style={{ fontSize: 11, fontWeight: 600, color: item.overduePending ? '#dc3545' : '#495057' }}>
-                              {getStatusDisplayLabel(item.status)}
-                            </span>
-                          </div>
-                        </div>
-                      </Link>
-                    ))
-                  )}
-                </div>
-              </div>
-            </Col>
-          </Row>
-
-        </>
+        <RecordsDashboard documents={documents} currentUser={currentUser} />
       )}
 
-      {/* OPM Assistant Dashboard */}
-      {role === 'OPM Assistant' && (
+      {/* OPM Secretary Dashboard */}
+      {isOpm && (
         <>
           <Row className="g-3 mb-3">
             <Col sm={6}>
@@ -439,8 +314,8 @@ export default function Dashboard({ currentUser }) {
 
           <div className="content-card">
             <div className="content-card-header">
-              <h6><i className="bi bi-person-check-fill me-2 text-primary"></i>Review Queue</h6>
-              <Link to="/opm-assistant" className="btn btn-sm btn-outline-primary">Open Queue</Link>
+              <h6><i className="bi bi-person-check-fill me-2 text-primary"></i>OPM Secretary Review Queue</h6>
+              <Link to="/opm-secretary" className="btn btn-sm btn-outline-primary">Open Queue</Link>
             </div>
             <div className="table-responsive">
               <table className="table doc-table mb-0">
