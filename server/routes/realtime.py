@@ -67,10 +67,10 @@ def stream_realtime_events():
             while True:
                 try:
                     event = queue.get(timeout=25)
-                    event_name = str(event.get('type') or 'message')
+                    event_name = str(event.get('event') or event.get('type') or 'message')
                     yield build_sse_message(event_name, event)
                 except Empty:
-                    yield ': keep-alive\n\n'
+                    yield ": keep-alive\n\n"
         except GeneratorExit:
             pass
         finally:

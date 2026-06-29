@@ -14,17 +14,17 @@ const formatDate = (value) => {
   }).format(date)
 }
 
-export default function TaskMonitoringTable({ rows }) {
+export default function TaskMonitoringTable({ rows, hideDivisionColumn = false, hideTitle = false }) {
   return (
     <div className="records-monitor-sheet">
-      <div className="records-monitor-title">TASK MONITORING</div>
+      {!hideTitle && <div className="records-monitor-title">TASK MONITORING</div>}
 
       <div className="table-responsive records-monitor-scroll">
         <table className="table records-monitor-table mb-0">
           <thead>
             <tr>
               <th className="records-monitor-th-main">Control No.</th>
-              <th className="records-monitor-th-main">Division</th>
+              {!hideDivisionColumn && <th className="records-monitor-th-main">Division</th>}
               <th>Status</th>
               <th>Date Routed</th>
               <th>Date Completed</th>
@@ -37,12 +37,12 @@ export default function TaskMonitoringTable({ rows }) {
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={9} className="records-monitor-empty">No routed tasks yet.</td>
+                <td colSpan={hideDivisionColumn ? 8 : 9} className="records-monitor-empty">No routed tasks yet.</td>
               </tr>
             ) : rows.map((row) => (
               <tr key={row.id} className={row.isOverdue ? 'is-overdue' : row.dateCompleted ? 'is-completed' : ''}>
                 <td className="records-monitor-control">{row.trackingNumber}</td>
-                <td className="records-monitor-division" title={row.division}>{row.division || '--'}</td>
+                {!hideDivisionColumn && <td className="records-monitor-division" title={row.division}>{row.division || '--'}</td>}
                 <td><StatusBadge status={row.statusDetail || row.status} compact /></td>
                 <td>{formatDate(row.dateRouted)}</td>
                 <td>{row.dateCompleted ? formatDate(row.dateCompleted) : ''}</td>

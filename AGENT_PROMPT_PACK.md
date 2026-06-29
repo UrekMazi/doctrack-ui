@@ -117,9 +117,9 @@ Best add-ons:
 
 ## Current Work Context
 - Source of truth for recent updates: `.docs/HANDOFF.md`
-- Latest completed batch: Control/Tracking -> Control/Reference wording, `PPA|` -> `PPA-PMO-NOB|` QR prefix, and the matching Scan/Register, transmittal, and report label cleanup
-- Active notification work: reminder sound selection lives in `src/components/TopNav.jsx`; OPM assistant/secretary/PM should use `opm_pm_notif.wav`, reminder timing target is 3 minutes, and notifications should remain limited to newly routed documents needing action
-- Current state: changes are still uncommitted, so start from the nearest anchor and validate the touched slice first
+- Latest completed batch: Control/Tracking → Control/Reference wording (100% done), `PPA|` → `PPA-PMO-NOB|` QR prefix, scan/register flow simplification, Part 4 wording polish — all committed
+- Notification work done: reminder sound `opm_pm_notif.wav` with 3-minute cadence in `src/components/TopNav.jsx`, limited to newly routed documents needing action
+- Current state: git is clean, ready for next employer-requested feature batch
 
 ## Versioned Update Archive
 - Read latest first, then step backward only if the request depends on older workflow behavior.

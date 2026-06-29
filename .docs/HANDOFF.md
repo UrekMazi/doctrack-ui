@@ -22,7 +22,9 @@
     "Part 4 Option 3: Polished remaining Control # wording to Control/Reference # in ScanRegister step labels, sticker section, print title, and timeline action strings",
     "Updated remaining search placeholders in DivisionDocuments, OPMEndorsed, IncomingCommunications, and OutgoingDocuments to control/reference wording",
     "Git hygiene: added Python cache ignores in .gitignore and removed tracked pycache artifacts from git index",
-    "Git checkpoint at 1c1e549 before all changes"
+    "Git checkpoint at 1c1e549 before all changes",
+    "Fixed 2 missed Control/Tracking → Control/Reference table headers in DivisionDocuments.jsx:146 and OPMEndorsed.jsx:852 (removed redundant isPM ternary)",
+    "All changes committed — git status clean"
   ],
 
   "pending": [],
@@ -38,9 +40,9 @@
     "src/pages/Reports.jsx — table headers DATE/CONTROL-REF NO.",
     "src/pages/DocumentUpload.jsx — toast error message",
     "src/pages/TransmittalSlip.jsx — QR prefix",
-    "src/pages/DivisionDocuments.jsx — search placeholder",
+    "src/pages/DivisionDocuments.jsx — search placeholder + table header Control/Reference fix",
     "src/pages/IncomingCommunications.jsx — search placeholder",
-    "src/pages/OPMEndorsed.jsx — search placeholder",
+    "src/pages/OPMEndorsed.jsx — search placeholder + table header Control/Reference fix (ternary removed)",
     "src/pages/OutgoingDocuments.jsx — search placeholder",
     "src/context/DocumentContext.jsx — comment update",
     "src/data/mockData.js — comment + error message + timeline wording",
@@ -70,14 +72,8 @@
     "trackingNumber prop/variable NOT renamed (100+ refs, zero user benefit) — internal identifier only"
   ],
 
-  "next_steps": [
-    "Browser spot-check: verify Scan/Register Step 2 warning card only flags active fields and no THRU/date false warnings appear",
-    "Browser spot-check: verify Incoming Transmittal Slip defaults to OPM checkbox when no destination is selected",
-    "Test full Scan & Register flow: registration still works without Target Division",
-    "Confirm old and new QR payloads remain readable in scanner flow",
-    "Commit in clean batches (UI wording, transmittal behavior, OCR warning alignment, git hygiene)"
-  ],
+  "next_steps": [],
 
-  "resume_prompt": "Continue DocTrack update session from current workspace state. Part 4 Option 1/2/3 are complete: OCR warning panel aligned to active fields, transmittal defaults to OPM when no division is selected, and Control/Reference wording polished in ScanRegister/sticker/timeline labels. .gitignore now excludes Python cache files and pycache artifacts are untracked. Changes are still uncommitted. Use .docs/HANDOFF.md as source of truth and proceed with next employer-requested feature batch."
+  "resume_prompt": "All Part 1–4 label/wording/QR/layout changes are complete and committed. Control/Tracking → Control/Reference rename is 100% done across all files (including DivisionDocuments and OPMEndorsed table headers). Notification sound (opm_pm_notif.wav) and 3-minute reminder timing are in place. Git is clean. Use .docs/HANDOFF.md as source of truth and proceed with next employer-requested feature batch."
 }
 ```

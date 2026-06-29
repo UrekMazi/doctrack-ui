@@ -5,7 +5,7 @@ import { DocumentProvider } from './context/DocumentContext'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import Layout from './components/Layout'
 import Login from './pages/Login'
-import { normalizeRole, OPM_ROLE_INTERNAL, isOpmRole } from './utils/workflowLabels'
+import { normalizeRole, OPM_ROLE_INTERNAL, isOpmRole, isPMRole } from './utils/workflowLabels'
 import {
   importDashboard,
   importIncomingCommunications,
@@ -132,9 +132,9 @@ function AppRoutes() {
     systemRole: role,
     name: user.fullName,
   }
-  const defaultHomeRoute = isOpmRole(role) ? '/opm-secretary' : '/'
 
   const canAccess = (allowedRoles) => allowedRoles.includes(role)
+
   const guardRoute = (allowedRoles, element) => (
     canAccess(allowedRoles) ? element : <Navigate to="/" replace />
   )
@@ -150,14 +150,7 @@ function AppRoutes() {
       <Layout currentUser={currentUser} onLogout={logout}>
         <Suspense fallback={<RouteFallback />}>
           <Routes>
-            <Route
-              path="/"
-              element={
-                defaultHomeRoute === '/'
-                  ? <Dashboard currentUser={currentUser} />
-                  : <Navigate to={defaultHomeRoute} replace />
-              }
-            />
+            <Route path="/" element={<Dashboard currentUser={currentUser} />} />
             {/* Operator routes */}
             <Route path="/scan" element={guardRoute(['Operator'], <ScanRegister />)} />
             <Route path="/incoming" element={guardRoute(['Operator'], <IncomingCommunications />)} />
@@ -166,18 +159,18 @@ function AppRoutes() {
             {/* OPM Secretary + PM routes */}
             <Route path="/opm-assistant" element={guardRoute([OPM_ROLE_INTERNAL], <OPMEndorsed currentUser={currentUser} />)} />
             <Route path="/opm-secretary" element={guardRoute([OPM_ROLE_INTERNAL], <OPMEndorsed currentUser={currentUser} />)} />
-            <Route path="/pm-routing" element={guardRoute(['PM'], <OPMEndorsed currentUser={currentUser} />)} />
-            <Route path="/opm-endorsed" element={guardRoute(['PM'], <OPMEndorsed currentUser={currentUser} />)} />
+            <Route path="/pm-routing" element={guardRoute(['PM', 'OIC'], <OPMEndorsed currentUser={currentUser} />)} />
+            <Route path="/opm-endorsed" element={guardRoute(['PM', 'OIC'], <OPMEndorsed currentUser={currentUser} />)} />
             {/* Division route */}
             <Route path="/division-documents" element={guardRoute(['Division'], <DivisionDocuments currentUser={currentUser} />)} />
             {/* Admin route */}
             <Route path="/admin/users" element={guardRoute(['Admin'], <AdminUsers />)} />
             {/* Shared routes */}
             <Route path="/document/:id" element={<DocumentDetail currentUser={currentUser} />} />
-            <Route path="/transmittal/:id" element={guardRoute(['Operator', 'PM'], <TransmittalSlip />)} />
+            <Route path="/transmittal/:id" element={guardRoute(['Operator', 'PM', 'OIC'], <TransmittalSlip />)} />
             <Route path="/qr-scanner" element={guardRoute(['Operator'], <QRScanner />)} />
             <Route path="/tracking" element={<Tracking />} />
-            <Route path="/reports" element={guardRoute(['Operator', 'PM', 'Admin'], <Reports />)} />
+            <Route path="/reports" element={guardRoute(['Operator', 'PM', 'OIC', 'Admin'], <Reports />)} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </Suspense>

@@ -13,7 +13,7 @@ import { useAuth } from '../context/AuthContext'
 import { useDocuments } from '../context/DocumentContext'
 import { inferDocumentDirection } from '../utils/documentDirection'
 import { openIncomingTransmittalPrintWindow } from '../utils/incomingTransmittalPrint'
-import { WORKFLOW_STATUS, getStatusDisplayLabel, isOpmInitialReviewStatus, isOpmRole, normalizeRole } from '../utils/workflowLabels'
+import { WORKFLOW_STATUS, getStatusDisplayLabel, isOpmInitialReviewStatus, isOpmRole, isPMRole, normalizeRole } from '../utils/workflowLabels'
 import {
   TAG_PRESETS,
   DEFAULT_CUSTOM_TAG_COLOR,
@@ -226,7 +226,7 @@ function getRoleLabel(currentUser) {
   const role = normalizeRole(currentUser?.systemRole || currentUser?.role || '')
   if (role === 'Operator') return 'RECORDS'
   if (isOpmRole(role)) return 'OPM'
-  if (role === 'PM') return 'PM'
+  if (isPMRole(role)) return role
   if (role === 'Division') return currentUser?.division || 'Division'
   return role || 'User'
 }
@@ -235,7 +235,7 @@ function isPmInstructionComment(entry) {
   const role = String(entry?.roleLabel || entry?.role || '').trim().toUpperCase()
   const authorName = String(entry?.name || entry?.authorName || '').trim().toUpperCase()
 
-  if (role === 'PM' || role.includes('PORT MANAGER')) return true
+  if (role === 'PM' || role === 'OIC' || role.includes('PORT MANAGER') || role.includes('OFFICER-IN-CHARGE')) return true
 
   // Match standalone PM token in author name (avoid classifying OPM as PM).
   return /(^|[^A-Z])PM([^A-Z]|$)/.test(authorName) || authorName.includes('PORT MANAGER')
@@ -256,7 +256,7 @@ function isOpmEndorseRemark(entry) {
 export default function DocumentDetail({ currentUser }) {
   const { id } = useParams()
   const { token, authFetch } = useAuth()
-  const { documents, updateDocumentStatus, refreshDocuments } = useDocuments()
+  const { documents, updateDocumentStatus, sendChatMessage, refreshDocuments } = useDocuments()
   // useParams always returns strings; backend IDs are numbers — use loose equality
   const doc = documents.find(d => String(d.id) === String(id) || d.trackingNumber === id) ||
               OUTGOING_DOCUMENTS.find(d => String(d.id) === String(id) || d.trackingNumber === id)
@@ -270,6 +270,24 @@ export default function DocumentDetail({ currentUser }) {
         <Link to="/" className="btn btn-primary">Back to Dashboard</Link>
       </div>
     )
+  }
+
+  const oicGuardRole = normalizeRole(currentUser?.systemRole || currentUser?.role || '')
+  if (oicGuardRole === 'OIC') {
+    const targetDiv = String(doc.targetDivision || '').toLowerCase()
+    const targetDivs = Array.isArray(doc.targetDivisions) ? doc.targetDivisions : []
+    const isOicDoc = targetDiv.includes('officer-in-charge') || targetDiv === 'oic' ||
+      targetDivs.some(d => String(d || '').toLowerCase().includes('officer-in-charge') || String(d || '').toLowerCase() === 'oic')
+    if (!isOicDoc) {
+      return (
+        <div className="empty-state">
+          <i className="bi bi-shield-lock d-block"></i>
+          <h5>Access Denied</h5>
+          <p>This document is restricted and not assigned to the Officer-in-Charge.</p>
+          <Link to="/" className="btn btn-primary">Back to Dashboard</Link>
+        </div>
+      )
+    }
   }
 
   const isIncoming = inferDocumentDirection(doc) === 'Incoming'
@@ -294,6 +312,8 @@ export default function DocumentDetail({ currentUser }) {
   const [selectedPdfPage, setSelectedPdfPage] = useState(1)
   const [selectedPdfTotalPages, setSelectedPdfTotalPages] = useState(1)
   const [instructionInput, setInstructionInput] = useState('')
+  const [replyInput, setReplyInput] = useState('')
+  const [commentTab, setCommentTab] = useState('instructions')
   const [showEndorseModal, setShowEndorseModal] = useState(false)
   const [endorseRemarks, setEndorseRemarks] = useState('')
   const [generateTransmittal, setGenerateTransmittal] = useState(true)
@@ -317,6 +337,7 @@ export default function DocumentDetail({ currentUser }) {
   const [showAssistantEndorseModal, setShowAssistantEndorseModal] = useState(false)
   const [assistantRemarks, setAssistantRemarks] = useState('')
   const [endorsingToPM, setEndorsingToPM] = useState(false)
+  const [isEndorsingToOic, setIsEndorsingToOic] = useState(false)
   
   const [showQrReceiveModal, setShowQrReceiveModal] = useState(false)
   const [qrCameraError, setQrCameraError] = useState('')
@@ -345,6 +366,14 @@ export default function DocumentDetail({ currentUser }) {
   const [completionFile, setCompletionFile] = useState(null)
   const [completingTask, setCompletingTask] = useState(false)
   const qrScannerRef = useRef(null)
+  const chatAreaRef = useRef(null)
+
+  useEffect(() => {
+    if (commentTab === 'replies' && chatAreaRef.current) {
+      chatAreaRef.current.scrollTop = chatAreaRef.current.scrollHeight
+    }
+  }, [doc?.replyComments, commentTab])
+
   const qrScannerElementId = 'doc-detail-qr-reader'
   const shouldShowRoutingMarks = doc.status === WORKFLOW_STATUS.ROUTED_CONCERNED || doc.status === WORKFLOW_STATUS.RECEIVED_ACKNOWLEDGED || doc.status === WORKFLOW_STATUS.REROUTED || doc.status === WORKFLOW_STATUS.PENDING_OPM_FINALIZATION
   const selectedDivisionCodes = shouldShowRoutingMarks ? getSelectedDivisionCodes(doc) : []
@@ -406,7 +435,7 @@ export default function DocumentDetail({ currentUser }) {
     .filter((division, idx, arr) => arr.indexOf(division) === idx)
   const supportingDivisionList = supportingDivisionDisplayList.map((division) => normalizeDivisionValue(division))
   const isCoreRoutingRole =
-    userRole === 'PM' ||
+    isPMRole(userRole) ||
     userRole === 'Operator' ||
     userRole === 'Admin' ||
     normalizeDivisionValue(currentUser?.division) === 'records section'
@@ -843,8 +872,31 @@ export default function DocumentDetail({ currentUser }) {
       },
     ]
 
-    updateDocumentStatus(doc.id, doc.status, { divisionReceipts: nextReceipts })
-  }, [doc?.id, doc?.status, doc?.divisionReceipts, currentUser, isIncoming, isUserMainDivision, isUserSupportingDivision, isUserInRoutedDivisionByCode, updateDocumentStatus])
+    const updates = { divisionReceipts: nextReceipts }
+
+    // Add to routing history if this is a CF Party viewing for the first time
+    if (isUserSupportingDivision && !isUserMainDivision) {
+      const isAlreadyInRoutingHistory = Array.isArray(doc.routingHistory) && doc.routingHistory.some(entry => 
+        entry.office === userDivision && String(entry.action || '').includes('Document viewed by CF Party')
+      )
+      
+      if (!isAlreadyInRoutingHistory) {
+        updates.routingHistory = [
+          ...(doc.routingHistory || []),
+          {
+            office: userDivision,
+            action: 'Document viewed by CF Party',
+            date: nowIso.split('T')[0],
+            time: new Date().toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' }),
+            user: currentUser?.name || 'Division Staff',
+            status: 'done',
+          }
+        ]
+      }
+    }
+
+    updateDocumentStatus(doc.id, doc.status, updates)
+  }, [doc?.id, doc?.status, doc?.divisionReceipts, doc?.routingHistory, currentUser, isIncoming, isUserMainDivision, isUserSupportingDivision, isUserInRoutedDivisionByCode, updateDocumentStatus])
 
   useEffect(() => {
     if (!doc || !currentUser) return
@@ -863,7 +915,7 @@ export default function DocumentDetail({ currentUser }) {
     }
 
     updateViewing()
-    const intervalId = window.setInterval(updateViewing, 3000)
+    const intervalId = window.setInterval(updateViewing, 20000)
 
     return () => {
       cancelled = true
@@ -979,23 +1031,39 @@ export default function DocumentDetail({ currentUser }) {
       return
     }
 
-    const nextComments = [
-      ...instructionComments,
-      {
-        id: `INS-${Date.now()}`,
-        roleLabel,
-        name: commenterName,
-        comment: trimmed,
-        createdAt: new Date().toISOString(),
-      },
-    ]
+    const newCommentObj = {
+      id: `INS-${Date.now()}`,
+      roleLabel,
+      name: commenterName,
+      comment: trimmed,
+      createdAt: new Date().toISOString(),
+    }
 
-    updateDocumentStatus(doc.id, doc.status, {
-      instructionComments: nextComments,
-    })
+    sendChatMessage(doc.id, newCommentObj, 'instructionComments')
 
     setInstructionInput('')
     toast.success('Instruction comment added.')
+  }
+
+  const addReplyComment = () => {
+    const trimmed = replyInput.trim()
+    if (!trimmed) {
+      toast.error('Please enter a reply first.')
+      return
+    }
+
+    const newReplyObj = {
+      id: `RPL-${Date.now()}`,
+      roleLabel,
+      name: commenterName,
+      comment: trimmed,
+      createdAt: new Date().toISOString(),
+    }
+
+    sendChatMessage(doc.id, newReplyObj, 'replyComments')
+
+    setReplyInput('')
+    toast.success('Reply comment added.')
   }
 
   const openPMRoutingModal = (mode = 'pm') => {
@@ -1657,9 +1725,10 @@ export default function DocumentDetail({ currentUser }) {
     }
     const trimmedRemarks = assistantRemarks.trim()
 
+    const targetTitle = isEndorsingToOic ? 'Officer-in-Charge (OIC)' : 'Port Manager (PM)'
     const authAction = trimmedRemarks
-      ? `Verified by OPM and forwarded to PM; Remarks: ${trimmedRemarks}`
-      : 'Verified by OPM and forwarded to PM'
+      ? `Verified by OPM and forwarded to ${isEndorsingToOic ? 'OIC' : 'PM'}; Remarks: ${trimmedRemarks}`
+      : `Verified by OPM and forwarded to ${isEndorsingToOic ? 'OIC' : 'PM'}`
 
     const delegationCommentText = '[OPM endorsement remark] ' + trimmedRemarks
     const nextInstructionComments = trimmedRemarks
@@ -1679,13 +1748,13 @@ export default function DocumentDetail({ currentUser }) {
       : doc.instructionComments
 
     const updateOk = await updateDocumentStatus(doc.id, WORKFLOW_STATUS.PM_REVIEW, {
-      currentLocation: 'Port Manager (PM)',
-      targetDivision: 'Port Manager (PM)',
+      currentLocation: targetTitle,
+      targetDivision: targetTitle,
       instructionComments: nextInstructionComments,
       routingHistory: [
         ...(doc.routingHistory || []),
         {
-          office: 'Port Manager (PM)',
+          office: targetTitle,
           action: authAction,
           date: nowIso.split('T')[0],
           time: now.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' }),
@@ -2455,54 +2524,147 @@ export default function DocumentDetail({ currentUser }) {
           </div>
 
           <div className="content-card mb-4 no-print doc-detail-comments-card">
-            <div className="content-card-header">
-              <h6><i className="bi bi-chat-left-text me-2"></i>Instruction Comments</h6>
+            <div className="content-card-header" style={{ paddingBottom: 0 }}>
+              <div className="d-flex align-items-center gap-2 w-100">
+                <button
+                  className={`comment-tab-btn${commentTab === 'instructions' ? ' active' : ''}`}
+                  onClick={() => setCommentTab('instructions')}
+                >
+                  <i className="bi bi-chat-left-text me-1"></i>Instruction Comments
+                  {instructionComments.length > 0 && <span className="comment-tab-badge">{instructionComments.length}</span>}
+                </button>
+                <button
+                  className={`comment-tab-btn${commentTab === 'replies' ? ' active' : ''}`}
+                  onClick={() => setCommentTab('replies')}
+                >
+                  <i className="bi bi-chat-dots me-1"></i>Chats
+                  {(Array.isArray(doc.replyComments) && doc.replyComments.length > 0) && <span className="comment-tab-badge reply">{doc.replyComments.length}</span>}
+                </button>
+              </div>
             </div>
             <div className="content-card-body">
-              <div className="text-muted mb-2" style={{ fontSize: 12 }}>
-                Add comment as <strong>{roleLabel}</strong> ({commenterName})
-              </div>
-              <Form.Control
-                as="textarea"
-                rows={3}
-                placeholder="Type your instruction/comment..."
-                value={instructionInput}
-                onChange={(e) => setInstructionInput(e.target.value)}
-              />
-              <div className="d-flex justify-content-end mt-2">
-                <Button size="sm" onClick={addInstructionComment}>
-                  <i className="bi bi-plus-lg me-1"></i>Add Comment
-                </Button>
-              </div>
-              {instructionComments.length > 0 && (
-                <div className="mt-3" style={{ fontSize: 12 }}>
-                  {instructionComments.map((entry) => {
-                    let text = entry.comment || ''
-                    const isOpmEndorse = isOpmEndorseRemark(entry)
-                    const isRecordsEndorse = isRecordsEndorseRemark(entry)
-                    if (text.startsWith('[OPM Secretary remarks] ')) {
-                      text = text.replace('[OPM Secretary remarks] ', '')
-                    }
-                    if (text.startsWith('[OPM Assistant remarks] ')) {
-                      text = text.replace('[OPM Assistant remarks] ', '')
-                    }
-                    if (text.startsWith('[OPM remarks] ')) {
-                      text = text.replace('[OPM remarks] ', '')
-                    }
-                    if (text.startsWith('[OPM endorsement remark] ')) {
-                      text = text.replace('[OPM endorsement remark] ', '')
-                    }
-                    if (text.startsWith('[Records endorsement remark] ')) {
-                      text = text.replace('[Records endorsement remark] ', '')
-                    }
-                    return (
-                      <div key={entry.id || `${entry.roleLabel}-${entry.name}-${entry.createdAt}`} className="p-2 rounded mb-2" style={{ background: '#f8f9fa', border: '1px solid #e9ecef' }}>
-                        <div className="fw-semibold">{isOpmEndorse ? 'Remarks by OPM to PM:' : isRecordsEndorse ? 'Remarks by Records Division' : `${entry.roleLabel}${entry.name ? ` (${entry.name})` : ''}`}</div>
-                        <div>{text}</div>
+              {/* ── Instruction Comments Tab ── */}
+              {commentTab === 'instructions' && (
+                <>
+                  <div className="text-muted mb-2" style={{ fontSize: 12 }}>
+                    Add comment as <strong>{roleLabel}</strong> ({commenterName})
+                    <span className="ms-2 text-info" style={{ fontSize: 11 }}><i className="bi bi-info-circle me-1"></i>Visible on Transmittal Slip</span>
+                  </div>
+                  <Form.Control
+                    as="textarea"
+                    rows={3}
+                    placeholder="Type your instruction/comment..."
+                    value={instructionInput}
+                    onChange={(e) => setInstructionInput(e.target.value)}
+                  />
+                  <div className="d-flex justify-content-end mt-2">
+                    <Button size="sm" onClick={addInstructionComment}>
+                      <i className="bi bi-plus-lg me-1"></i>Add Comment
+                    </Button>
+                  </div>
+                  {instructionComments.length > 0 && (
+                    <div className="mt-3 comment-thread" style={{ fontSize: 12 }}>
+                      {[...instructionComments]
+                        .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
+                        .map((entry) => {
+                        let text = entry.comment || ''
+                        const isOpmEndorse = isOpmEndorseRemark(entry)
+                        const isRecordsEndorse = isRecordsEndorseRemark(entry)
+                        if (text.startsWith('[OPM Secretary remarks] ')) {
+                          text = text.replace('[OPM Secretary remarks] ', '')
+                        }
+                        if (text.startsWith('[OPM Assistant remarks] ')) {
+                          text = text.replace('[OPM Assistant remarks] ', '')
+                        }
+                        if (text.startsWith('[OPM remarks] ')) {
+                          text = text.replace('[OPM remarks] ', '')
+                        }
+                        if (text.startsWith('[OPM endorsement remark] ')) {
+                          text = text.replace('[OPM endorsement remark] ', '')
+                        }
+                        if (text.startsWith('[Records endorsement remark] ')) {
+                          text = text.replace('[Records endorsement remark] ', '')
+                        }
+                        return (
+                          <div key={entry.id || `${entry.roleLabel}-${entry.name}-${entry.createdAt}`} className="p-2 rounded mb-2" style={{ background: '#f8f9fa', border: '1px solid #e9ecef' }}>
+                            <div className="fw-semibold">{isOpmEndorse ? 'Remarks by OPM to PM:' : isRecordsEndorse ? 'Remarks by Records Division' : `${entry.roleLabel}${entry.name ? ` (${entry.name})` : ''}`}</div>
+                            <div>{text}</div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* ── Reply Comments Tab (Messenger-style) ── */}
+              {commentTab === 'replies' && (
+                <>
+                  <div className="text-muted mb-2 d-flex align-items-center justify-content-between" style={{ fontSize: 12 }}>
+                    <span>
+                      Chatting as <strong>{roleLabel}</strong> ({commenterName})
+                    </span>
+                    <span className="text-warning" style={{ fontSize: 11 }}><i className="bi bi-eye-slash me-1"></i>Not on Transmittal Slip</span>
+                  </div>
+
+                  {/* ── Chat messages area ── */}
+                  <div className="reply-chat-area" ref={chatAreaRef}>
+                    {Array.isArray(doc.replyComments) && doc.replyComments.length > 0 ? (
+                      [...doc.replyComments]
+                        .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
+                        .map((entry) => {
+                        const isMine = entry.name === commenterName && entry.roleLabel === roleLabel
+                        return (
+                          <div key={entry.id || `${entry.roleLabel}-${entry.name}-${entry.createdAt}`} className={`reply-msg-row ${isMine ? 'mine' : 'theirs'}`}>
+                            {!isMine && (
+                              <div className="reply-msg-avatar">
+                                {(entry.name || entry.roleLabel || '?').charAt(0).toUpperCase()}
+                              </div>
+                            )}
+                            <div className={`reply-msg-bubble ${isMine ? 'mine' : 'theirs'}`}>
+                              {!isMine && (
+                                <div className="reply-msg-sender">{entry.roleLabel}{entry.name ? ` (${entry.name})` : ''}</div>
+                              )}
+                              <div className="reply-msg-text">{entry.comment}</div>
+                              {entry.createdAt && (
+                                <div className="reply-msg-time">
+                                  {new Date(entry.createdAt).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}{' '}
+                                  {new Date(entry.createdAt).toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' })}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })
+                    ) : (
+                      <div className="text-muted text-center py-4" style={{ fontSize: 12 }}>
+                        <i className="bi bi-chat-dots d-block mb-1" style={{ fontSize: 24, opacity: 0.3 }}></i>
+                        No messages yet. Start the conversation.
                       </div>
-                    )
-                  })}
-                </div>
+                    )}
+                  </div>
+
+                  {/* ── Chat composer bar ── */}
+                  <div className="reply-chat-composer">
+                    <Form.Control
+                      as="textarea"
+                      rows={1}
+                      className="reply-chat-input"
+                      placeholder="Type a message..."
+                      value={replyInput}
+                      onChange={(e) => setReplyInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault()
+                          addReplyComment()
+                        }
+                      }}
+                    />
+                    <button className="reply-chat-send-btn" onClick={addReplyComment} title="Send">
+                      <i className="bi bi-send-fill"></i>
+                    </button>
+                  </div>
+                </>
               )}
             </div>
           </div>
@@ -2918,20 +3080,41 @@ export default function DocumentDetail({ currentUser }) {
       >
         <Modal.Header closeButton={!endorsingToPM}>
           <Modal.Title style={{ fontSize: 18 }}>
-            <i className="bi bi-send-check me-2 text-primary"></i>Endorse Document to PM
+            <i className="bi bi-send-check me-2 text-primary"></i>Endorse Document to PM / OIC
           </Modal.Title>
         </Modal.Header>
         <Modal.Body>
           <div className="text-secondary small mb-3">
-            Digital and physical verification completed for <strong>{doc.trackingNumber}</strong>. You are now endorsing this document to the Port Manager for action.
+            Digital and physical verification completed for <strong>{doc.trackingNumber}</strong>. You are now endorsing this document to the Port Manager or Officer-in-Charge for action.
           </div>
           <div className="alert alert-light border py-2 px-3" style={{ fontSize: 12 }}>
             <i className="bi bi-arrow-counterclockwise me-1"></i>
             You can undo this endorsement for a few seconds right after confirmation.
           </div>
           
+          <Form.Group className="mb-3 p-3 bg-light border rounded">
+            <Form.Label className="fw-semibold d-block" style={{ fontSize: 13 }}>Route to:*</Form.Label>
+            <Form.Check
+              type="radio"
+              id="route-pm"
+              label="Port Manager (PM)"
+              checked={!isEndorsingToOic}
+              onChange={() => setIsEndorsingToOic(false)}
+              disabled={endorsingToPM}
+              className="mb-2"
+            />
+            <Form.Check
+              type="radio"
+              id="route-oic"
+              label="Officer-in-Charge (OIC)"
+              checked={isEndorsingToOic}
+              onChange={() => setIsEndorsingToOic(true)}
+              disabled={endorsingToPM}
+            />
+          </Form.Group>
+          
           <Form.Group className="mb-3">
-            <Form.Label className="fw-semibold" style={{ fontSize: 13 }}>Remarks for Port Manager <span className="text-muted fw-normal">(Optional)</span></Form.Label>
+            <Form.Label className="fw-semibold" style={{ fontSize: 13 }}>Remarks for PM / OIC <span className="text-muted fw-normal">(Optional)</span></Form.Label>
             <Form.Control
               as="textarea"
               rows={3}

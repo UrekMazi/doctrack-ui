@@ -24,7 +24,12 @@ export default function RecordsKanban({ lanes }) {
                 ) : (
                   visibleItems.map((doc) => (
                     <Link key={doc.id} to={`/document/${doc.id}`} className="records-kanban-item text-decoration-none" title={doc.subject}>
-                      {doc.trackingNumber}
+                      <div className="d-flex justify-content-between align-items-center">
+                        <span className="tracking-number" style={{ fontSize: '0.85rem' }}>{doc.trackingNumber}</span>
+                        {(doc.targetDivision === 'Officer-in-Charge (OIC)' || doc.targetDivision === 'OIC') && (
+                          <span className="badge bg-info text-dark ms-1" style={{ fontSize: '0.6rem' }} title="Assigned to Officer-in-Charge">OIC</span>
+                        )}
+                      </div>
                     </Link>
                   ))
                 )}

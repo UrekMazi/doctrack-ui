@@ -6,7 +6,7 @@ import { DIVISIONS } from '../data/mockData'
 import { useAuth } from '../context/AuthContext'
 import { useDocuments } from '../context/DocumentContext'
 import toast from 'react-hot-toast'
-import { WORKFLOW_STATUS, getStatusDisplayLabel, isOpmRole, normalizeRole, normalizeStatus } from '../utils/workflowLabels'
+import { WORKFLOW_STATUS, getStatusDisplayLabel, isPMRole, isOpmRole, normalizeRole, normalizeStatus } from '../utils/workflowLabels'
 import {
   TAG_PRESETS,
   DEFAULT_CUSTOM_TAG_COLOR,
@@ -103,8 +103,10 @@ export default function OPMEndorsed({ currentUser }) {
   const { token } = useAuth()
   const { documents, updateDocumentStatus } = useDocuments()
   const role = normalizeRole(currentUser?.systemRole || currentUser?.role || 'PM')
+  const isPM = isPMRole(role)
   const isAssistant = isOpmRole(role)
-  const isPM = role === 'PM'
+  const isSpecificPM = String(currentUser?.systemRole || currentUser?.role || '').trim().toUpperCase() === 'PM'
+  const isSpecificOIC = String(currentUser?.systemRole || currentUser?.role || '').trim().toUpperCase() === 'OIC'
   const [statusFilter, setStatusFilter] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
   const [routingDoc, setRoutingDoc] = useState(null)
@@ -247,6 +249,8 @@ export default function OPMEndorsed({ currentUser }) {
     WORKFLOW_STATUS.REROUTED,
   ])
   const opmDocs = documents.filter(doc => {
+    if (isSpecificOIC && doc.targetDivision !== 'Officer-in-Charge (OIC)' && doc.targetDivision !== 'OIC') return false
+
     const docStatus = normalizeStatus(doc.status)
     return isAssistant
       ? assistantStatuses.has(docStatus)
@@ -849,7 +853,7 @@ export default function OPMEndorsed({ currentUser }) {
           <table className={`table doc-table opm-queue-table mb-0 ${isPM ? 'pm-routing-table' : ''}`}>
             <thead>
               <tr>
-                <th className="pm-col-control">{isPM ? 'Control/Tracking #' : 'Control/Reference #'}</th>
+                <th className="pm-col-control">Control/Reference #</th>
                 <th className="pm-col-subject">Subject</th>
                 {isPM ? (
                   <th className="pm-col-from">From</th>

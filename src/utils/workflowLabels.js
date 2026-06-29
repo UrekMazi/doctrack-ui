@@ -12,7 +12,7 @@ export const WORKFLOW_STATUS = {
 export const STATUS_DISPLAY_LABELS = {
   [WORKFLOW_STATUS.OPM_INITIAL_REVIEW]: 'For OPM Secretary Review',
   [WORKFLOW_STATUS.OPM_INITIAL_REVIEW_LEGACY]: 'For OPM Secretary Review',
-  [WORKFLOW_STATUS.PM_REVIEW]: 'Under PM Review/Evaluation',
+  [WORKFLOW_STATUS.PM_REVIEW]: 'Under PM/OIC Review/Evaluation',
   [WORKFLOW_STATUS.ROUTED_CONCERNED]: 'Routed to RC/s Concerned',
   [WORKFLOW_STATUS.PENDING_OPM_FINALIZATION]: 'OPM Outgoing Review',
   [WORKFLOW_STATUS.REROUTED]: 'Re-routed by OPM',
@@ -45,6 +45,12 @@ export function isOpmRole(role) {
   const normalized = String(role || '').trim().toLowerCase()
   if (!normalized) return false
   return normalized === OPM_ROLE_INTERNAL.toLowerCase() || normalized === OPM_ROLE_LEGACY.toLowerCase()
+}
+
+export function isPMRole(role) {
+  const normalized = String(role || '').trim().toUpperCase()
+  if (!normalized) return false
+  return normalized === 'PM' || normalized === 'OIC'
 }
 
 export function normalizeRole(role) {

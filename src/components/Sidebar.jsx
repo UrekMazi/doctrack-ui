@@ -1,6 +1,6 @@
 import { NavLink } from 'react-router-dom'
 import { prefetchRoute } from '../utils/routePrefetch'
-import { isOpmRole, normalizeRole } from '../utils/workflowLabels'
+import { isOpmRole, isPMRole, normalizeRole } from '../utils/workflowLabels'
 
 export default function Sidebar({ currentUser }) {
   const role = normalizeRole(currentUser?.systemRole || currentUser?.role || 'Operator')
@@ -88,7 +88,7 @@ export default function Sidebar({ currentUser }) {
         )}
 
         {/* PM */}
-        {role === 'PM' && (
+        {isPMRole(role) && (
           <>
             <div className="sidebar-section" style={{ marginTop: 16 }}>PM</div>
             <NavLink to="/pm-routing" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`} {...linkPrefetchProps('/pm-routing')}>

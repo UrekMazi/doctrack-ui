@@ -9,9 +9,20 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from models import db, Document, User
 from realtime_events import publish_event
+import threading
 
 documents_bp = Blueprint('documents', __name__)
 logger = logging.getLogger(__name__)
+
+# Cross-client synchronization for read-modify-write on JSON fields
+_doc_locks = {}
+_doc_locks_mutex = threading.Lock()
+
+def get_doc_lock(doc_id):
+    with _doc_locks_mutex:
+        if doc_id not in _doc_locks:
+            _doc_locks[doc_id] = threading.Lock()
+        return _doc_locks[doc_id]
 
 DEFAULT_STORAGE_FOLDER = os.environ.get('DOCTRACK_STORAGE_FOLDER', 'DocTrack Files')
 LEGACY_STORAGE_ROOT = 'D:\\'
@@ -547,37 +558,70 @@ def update_document(doc_id):
 
     # Update extra_data
     known_keys = set(simple_fields.keys()) | set(json_fields.keys()) | {'id', 'createdBy', 'createdAt', 'updatedAt'}
-    extra_data_dict = json.loads(doc.extra_data) if doc.extra_data else {}
-    for k, v in data.items():
-        if k not in known_keys:
-            extra_data_dict[k] = v
-    doc.extra_data = json.dumps(extra_data_dict)
+    
+    lock = get_doc_lock(doc_id)
+    with lock:
+        # Fetch the latest extra_data directly from the database to prevent cross-client read-modify-write race conditions
+        latest_extra_data = db.session.query(Document.extra_data).filter_by(id=doc_id).scalar()
+        extra_data_dict = json.loads(latest_extra_data) if latest_extra_data else {}
+        for k, v in data.items():
+            if k not in known_keys:
+                if isinstance(v, list):
+                    existing_list = extra_data_dict.get(k, [])
+                    if not isinstance(existing_list, list):
+                        existing_list = []
+                    merged = []
+                    seen = set()
+                    for entry in [*existing_list, *v]:
+                        if not isinstance(entry, dict):
+                            # For string lists like targetDivisions, just append them unique
+                            if entry not in seen:
+                                seen.add(entry)
+                                merged.append(entry)
+                            continue
+                        
+                        key = entry.get('id')
+                        if not key:
+                            key = f"{entry.get('roleLabel')}-{entry.get('name')}-{entry.get('comment')}-{entry.get('createdAt')}"
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        merged.append(entry)
+                    
+                    # Sort lists that have a createdAt field
+                    if merged and isinstance(merged[0], dict) and 'createdAt' in merged[0]:
+                        merged.sort(key=lambda x: x.get('createdAt') or '')
+                    extra_data_dict[k] = merged
+                else:
+                    extra_data_dict[k] = v
+        doc.extra_data = json.dumps(extra_data_dict)
 
-    try:
-        db.session.commit()
-    except IntegrityError as exc:
-        db.session.rollback()
-        logger.exception('Document update IntegrityError', extra={
-            'doc_id': doc_id,
-            'payload_keys': sorted(list(data.keys())),
-        })
-        error_text = str(getattr(exc, 'orig', exc)).lower()
-        if 'tracking_number' in error_text and 'unique' in error_text:
-            return jsonify({'error': 'Control/Reference number already exists. Generate a new number and retry.'}), 409
-        return jsonify({'error': 'Document update failed due to a data integrity constraint.'}), 400
-    except SQLAlchemyError as exc:
-        db.session.rollback()
-        logger.exception('Document update SQLAlchemyError', extra={
-            'doc_id': doc_id,
-            'payload_keys': sorted(list(data.keys())),
-            'db_error': str(getattr(exc, 'orig', exc)),
-        })
-        return jsonify({'error': 'Database error while updating document.'}), 500
+        try:
+            db.session.commit()
+        except IntegrityError as exc:
+            db.session.rollback()
+            logger.exception('Document update IntegrityError', extra={
+                'doc_id': doc_id,
+                'payload_keys': sorted(list(data.keys())),
+            })
+            error_text = str(getattr(exc, 'orig', exc)).lower()
+            if 'tracking_number' in error_text and 'unique' in error_text:
+                return jsonify({'error': 'Control/Reference number already exists. Generate a new number and retry.'}), 409
+            return jsonify({'error': 'Document update failed due to a data integrity constraint.'}), 400
+        except SQLAlchemyError as exc:
+            db.session.rollback()
+            logger.exception('Document update SQLAlchemyError', extra={
+                'doc_id': doc_id,
+                'payload_keys': sorted(list(data.keys())),
+                'db_error': str(getattr(exc, 'orig', exc)),
+            })
+            return jsonify({'error': 'Database error while updating document.'}), 500
 
     publish_event('documents-updated', {
         'docId': doc.id,
         'trackingNumber': doc.tracking_number,
         'action': 'updated',
+        'document': doc.to_dict(),
     })
 
     return jsonify({'document': doc.to_dict()})

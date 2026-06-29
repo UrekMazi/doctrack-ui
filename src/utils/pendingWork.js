@@ -1,4 +1,4 @@
-import { WORKFLOW_STATUS, isOpmInitialReviewStatus, isOpmRole, normalizeRole } from './workflowLabels'
+import { WORKFLOW_STATUS, isOpmInitialReviewStatus, isOpmRole, isPMRole, normalizeRole } from './workflowLabels'
 
 function normalizeText(value) {
   return String(value || '').trim().toLowerCase()
@@ -95,8 +95,15 @@ export function getPendingDocumentsForUser(documents, currentUser) {
     filtered = list.filter((doc) => doc?.status === WORKFLOW_STATUS.REGISTERED)
   } else if (isOpmRole(role)) {
     filtered = list.filter((doc) => isOpmInitialReviewStatus(doc?.status))
-  } else if (role === 'PM') {
-    filtered = list.filter((doc) => doc?.status === WORKFLOW_STATUS.PM_REVIEW)
+  } else if (isPMRole(role)) {
+    const isSpecificOIC = String(currentUser?.systemRole || currentUser?.role || '').trim().toUpperCase() === 'OIC'
+    const isSpecificPM = String(currentUser?.systemRole || currentUser?.role || '').trim().toUpperCase() === 'PM'
+    filtered = list.filter((doc) => {
+      if (doc?.status !== WORKFLOW_STATUS.PM_REVIEW) return false
+      if (isSpecificOIC && doc.targetDivision !== 'Officer-in-Charge (OIC)') return false
+      if (isSpecificPM && doc.targetDivision !== 'Port Manager (PM)') return false
+      return true
+    })
   } else if (role === 'Division') {
     const userDivision = String(currentUser?.division || '').trim()
     const userPosition = String(currentUser?.position || '').trim()

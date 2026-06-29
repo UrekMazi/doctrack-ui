@@ -6,7 +6,7 @@ import { OUTGOING_DOCUMENTS } from '../data/mockData'
 import { useDocuments } from '../context/DocumentContext'
 import { useAuth } from '../context/AuthContext'
 import { inferDocumentDirection } from '../utils/documentDirection'
-import { normalizeRole, isOpmRole, isOpmInitialReviewStatus, WORKFLOW_STATUS } from '../utils/workflowLabels'
+import { WORKFLOW_STATUS, isOpmRole, isPMRole, normalizeRole, isOpmInitialReviewStatus } from '../utils/workflowLabels'
 
 export default function Tracking() {
   const { documents } = useDocuments()
@@ -72,6 +72,15 @@ export default function Tracking() {
 
   const isRelevantForOpmPm = (doc) => {
     const kw = (v) => String(v || '').toLowerCase()
+    
+    // OIC exclusive filtering
+    if (role === 'OIC') {
+      const targetDivs = getDocumentTargetDivisions(doc)
+      const targetDiv = kw(doc?.targetDivision)
+      const isOicTarget = targetDiv.includes('officer-in-charge') || targetDiv === 'oic' || targetDivs.some(d => kw(d).includes('officer-in-charge') || kw(d) === 'oic')
+      if (!isOicTarget) return false
+    }
+
     const history = Array.isArray(doc?.routingHistory) ? doc.routingHistory : []
     const hit = history.some((entry) => {
       const action = kw(entry?.action)
@@ -184,7 +193,7 @@ export default function Tracking() {
     }
 
     // OPM / PM: show completed docs that went through OPM/PM endorsement/review
-    if (isOpm || role === 'PM') {
+    if (isOpm || isPMRole(role)) {
       const hadOpmPmReview = (doc) => {
         const history = Array.isArray(doc?.routingHistory) ? doc.routingHistory : []
         const kw = (v) => String(v || '').toLowerCase()
@@ -240,7 +249,7 @@ export default function Tracking() {
     )
     const scopedDocs = isDivisionManager
       ? allDocs.filter(isTrackableForDivisionManager)
-      : (isOpm || role === 'PM')
+      : (isOpm || isPMRole(role))
         ? allDocs.filter(isRelevantForOpmPm)
         : allDocs
     return scopedDocs.filter(d =>
@@ -351,7 +360,7 @@ export default function Tracking() {
       )}
 
       {results === null && (
-        (isDivisionManager || isOpm || role === 'PM') ? (
+        (isDivisionManager || isOpm || isPMRole(role)) ? (
           <>
             <div className="mb-3">
               <h5 className="mb-1">Recent Accomplished Tasks</h5>
