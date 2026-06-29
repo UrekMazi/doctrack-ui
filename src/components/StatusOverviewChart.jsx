@@ -32,7 +32,7 @@ const wrapLabel = (label, maxCharsPerLine = 15, maxLines = 3) => {
   return merged
 }
 
-export default function StatusOverviewChart({ data }) {
+export default function StatusOverviewChart({ data, hideXAxisLabel = false }) {
   const groups = Array.isArray(data) ? data : []
   const maxValue = Math.max(1, ...groups.flatMap((group) => [group.wip || 0, group.completed || 0, group.overdue || 0]))
   const chartHeight = 240
@@ -96,13 +96,15 @@ export default function StatusOverviewChart({ data }) {
                       </g>
                     )
                   })}
-                  <text x={centerX} y={194} textAnchor="middle" className="records-chart-label">
-                    {group.labelLines.map((line, lineIndex) => (
-                      <tspan key={`${group.division}-${lineIndex}`} x={centerX} dy={lineIndex === 0 ? 0 : 11}>
-                        {line}
-                      </tspan>
-                    ))}
-                  </text>
+                  {!hideXAxisLabel && (
+                    <text x={centerX} y={194} textAnchor="middle" className="records-chart-label">
+                      {group.labelLines.map((line, lineIndex) => (
+                        <tspan key={`${group.division}-${lineIndex}`} x={centerX} dy={lineIndex === 0 ? 0 : 11}>
+                          {line}
+                        </tspan>
+                      ))}
+                    </text>
+                  )}
                 </g>
               )
             })}

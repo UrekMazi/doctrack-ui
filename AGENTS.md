@@ -109,9 +109,9 @@ Report only concrete issues with file references and line numbers.
 
 ## Current Work Context
 - Source of truth for in-flight updates: `.docs/HANDOFF.md`
-- Latest completed batch: Control/Tracking -> Control/Reference wording, `PPA|` -> `PPA-PMO-NOB|` QR prefix, and the related Scan/Register and report wording cleanup
-- Active notification work: `src/components/TopNav.jsx` owns reminder sound selection, OPM assistant/secretary/PM should use `opm_pm_notif.wav`, reminder timing target is 3 minutes, and notifications should stay limited to newly routed documents needing action
-- Resume state: changes are still uncommitted, so keep future edits local and validate the touched slice first
+- Latest completed batch: Control/Tracking → Control/Reference wording (100% across all files), `PPA|` → `PPA-PMO-NOB|` QR prefix, scan/register flow simplification, Part 4 Option 1/2/3 polish — all committed
+- Notification work done: `src/components/TopNav.jsx` uses `opm_pm_notif.wav` with 3-minute reminder cadence, limited to newly routed documents needing action
+- Resume state: git is clean, ready for next employer-requested feature batch
 
 ## Versioned Update Archive
 - Read latest first, then walk backward only if the prompt touches older workflow behavior.

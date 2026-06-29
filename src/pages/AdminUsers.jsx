@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext'
 import toast from 'react-hot-toast'
 import { getRoleDisplayLabel, isOpmRole, normalizeRole } from '../utils/workflowLabels'
 
-const ROLE_OPTIONS = ['Operator', 'OPM Secretary', 'PM', 'Division', 'Admin']
+const ROLE_OPTIONS = ['Operator', 'OPM Secretary', 'PM', 'OIC', 'Division', 'Admin']
 const DIVISION_OPTIONS = [
   'Records Section',
   'Office of the Port Manager (OPM)',
@@ -115,7 +115,8 @@ export default function AdminUsers() {
     if (isOpmRole(role)) return 'info'
     switch (role) {
       case 'Admin': return 'danger'
-      case 'PM': return 'primary'
+      case 'PM':
+    case 'OIC': return 'primary'
       case 'Division': return 'success'
       case 'Operator': return 'secondary'
       default: return 'dark'

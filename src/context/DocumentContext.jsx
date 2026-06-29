@@ -43,6 +43,49 @@ function hasMigrationBeenChecked() {
   }
 }
 
+function mergeDocumentOptimisticState(localDoc, incomingDoc, isUpdating = false) {
+  if (!localDoc) return incomingDoc
+  const merged = { ...incomingDoc }
+  
+  if (Array.isArray(localDoc.replyComments) && Array.isArray(merged.replyComments)) {
+    const combined = [...merged.replyComments]
+    const incomingIds = new Set(merged.replyComments.map(c => c.id || `${c.roleLabel}-${c.name}-${c.createdAt}`))
+    for (const c of localDoc.replyComments) {
+      const key = c.id || `${c.roleLabel}-${c.name}-${c.createdAt}`
+      if (!incomingIds.has(key)) {
+        combined.push(c)
+      }
+    }
+    // Sort combined by createdAt to guarantee order
+    combined.sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
+    merged.replyComments = combined
+  }
+
+  if (Array.isArray(localDoc.instructionComments) && Array.isArray(merged.instructionComments)) {
+    const combined = [...merged.instructionComments]
+    const incomingIds = new Set(merged.instructionComments.map(c => c.id || `${c.roleLabel}-${c.name}-${c.createdAt}`))
+    for (const c of localDoc.instructionComments) {
+      const key = c.id || `${c.roleLabel}-${c.name}-${c.createdAt}`
+      if (!incomingIds.has(key)) {
+        combined.push(c)
+      }
+    }
+    combined.sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
+    merged.instructionComments = combined
+  }
+
+  if (isUpdating) {
+    // If localDoc has an optimistic update in flight, PRESERVE its scalar fields
+    // by overlaying localDoc over the incomingDoc (except for the merged arrays)
+    const result = { ...merged, ...localDoc }
+    result.replyComments = merged.replyComments
+    result.instructionComments = merged.instructionComments
+    return result
+  }
+
+  return { ...localDoc, ...merged }
+}
+
 function setMigrationChecked() {
   if (typeof window === 'undefined') return
   try {
@@ -52,13 +95,18 @@ function setMigrationChecked() {
   }
 }
 
+let globalUpdateQueue = Promise.resolve()
+
 export function DocumentProvider({ children }) {
   const { authFetch, token, user } = useAuth()
   const [documents, setDocuments] = useState([])
   const [loading, setLoading] = useState(true)
   const fetchInFlightRef = useRef(false)
-  const lastRealtimeRefreshAtRef = useRef(0)
+  const fetchQueuedRef = useRef(false)
   const initialBootProfileClosedRef = useRef(false)
+  const lastUpdateCompleteRef = useRef(0)
+  const updateInProgressRef = useRef(0)
+  const updatingDocsRef = useRef(new Set())
 
   useEffect(() => {
     if (!token) {
@@ -68,6 +116,7 @@ export function DocumentProvider({ children }) {
 
   const fetchDocuments = useCallback(async () => {
     if (fetchInFlightRef.current) {
+      fetchQueuedRef.current = true
       markFlow('docs:request:skipped-in-flight')
       return null
     }
@@ -83,17 +132,32 @@ export function DocumentProvider({ children }) {
     }
     try {
       markFlow('docs:request:start')
-      const res = await authFetch(`${API_BASE}/documents`)
+      const fetchInitTime = Date.now()
+      const res = await authFetch(`${API_BASE}/documents?_t=${fetchInitTime}`)
       if (res.ok) {
         const data = await res.json()
-        setDocuments(data.documents)
-        const docCount = Array.isArray(data.documents) ? data.documents.length : 0
-        writeDocumentsCache(user, data.documents)
-        markFlow('docs:response:ok', { count: docCount })
-        markFlow('docs:cache:updated', { count: docCount })
-        if (!initialBootProfileClosedRef.current) {
-          initialBootProfileClosedRef.current = true
-          endFlow('ready', { documents: docCount })
+        
+        // Race condition guard: If an update completed AFTER this fetch was initiated,
+        // this fetch might contain stale data from the database. Discard it.
+        // Also discard if an update is currently in progress.
+        if (fetchInitTime < lastUpdateCompleteRef.current || updateInProgressRef.current > 0) {
+          console.log('[DocTrack] Discarding stale fetch response (an update completed during fetch, or an update is currently in progress).')
+        } else {
+          setDocuments(prev => {
+            const nextDocs = (data.documents || []).map(fetchedDoc => {
+              const localDoc = prev.find(d => String(d.id) === String(fetchedDoc.id) || d.trackingNumber === fetchedDoc.trackingNumber)
+              return mergeDocumentOptimisticState(localDoc, fetchedDoc)
+            })
+            writeDocumentsCache(user, nextDocs)
+            return nextDocs
+          })
+          const docCount = Array.isArray(data.documents) ? data.documents.length : 0
+          markFlow('docs:response:ok', { count: docCount })
+          markFlow('docs:cache:updated', { count: docCount })
+          if (!initialBootProfileClosedRef.current) {
+            initialBootProfileClosedRef.current = true
+            endFlow('ready', { documents: docCount })
+          }
         }
         return data.documents
       }
@@ -107,6 +171,10 @@ export function DocumentProvider({ children }) {
       setLoading(false)
       fetchInFlightRef.current = false
       markFlow('docs:request:finish')
+      if (fetchQueuedRef.current) {
+        fetchQueuedRef.current = false
+        fetchDocuments()
+      }
     }
     return null
   }, [authFetch, token, user])
@@ -196,20 +264,45 @@ export function DocumentProvider({ children }) {
     let reconnectTimerId = null
     let isDisposed = false
 
+    let debounceTimerId = null
+
     const refreshFromRealtime = () => {
-      const now = Date.now()
-      if (now - lastRealtimeRefreshAtRef.current < 900) return
-      lastRealtimeRefreshAtRef.current = now
-      fetchDocuments()
+      if (debounceTimerId) window.clearTimeout(debounceTimerId)
+      debounceTimerId = window.setTimeout(() => {
+        fetchDocuments()
+      }, 300)
     }
 
     const connect = () => {
-      if (isDisposed) return
+      if (isDisposed || document.visibilityState === 'hidden') return
 
       const streamUrl = `${API_BASE}/realtime/stream?token=${encodeURIComponent(token)}`
       eventSource = new EventSource(streamUrl)
 
-      eventSource.addEventListener('documents-updated', refreshFromRealtime)
+      eventSource.addEventListener('documents-updated', (e) => {
+        try {
+          const parsed = JSON.parse(e.data)
+          const docPayload = parsed?.document || parsed?.payload?.document
+          if (docPayload) {
+            const isUpdating = updatingDocsRef.current.has(String(docPayload.id))
+            lastUpdateCompleteRef.current = Date.now()
+            setDocuments(prev => {
+              const idx = prev.findIndex(d => String(d.id) === String(docPayload.id) || d.trackingNumber === docPayload.trackingNumber)
+              if (idx >= 0) {
+                const nextDocs = [...prev]
+                nextDocs[idx] = mergeDocumentOptimisticState(nextDocs[idx], docPayload, isUpdating)
+                return nextDocs
+              }
+              if (!isUpdating) {
+                return [docPayload, ...prev]
+              }
+              return prev
+            })
+            return // Skip network refetch because we injected it directly!
+          }
+        } catch {}
+        refreshFromRealtime()
+      })
       eventSource.onmessage = refreshFromRealtime
 
       eventSource.onerror = () => {
@@ -218,16 +311,34 @@ export function DocumentProvider({ children }) {
           eventSource = null
         }
 
-        if (!isDisposed) {
+        if (!isDisposed && document.visibilityState === 'visible') {
           reconnectTimerId = window.setTimeout(connect, 3000)
         }
       }
     }
 
-    connect()
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        if (!eventSource) connect()
+        fetchDocuments()
+      } else {
+        if (eventSource) {
+          eventSource.close()
+          eventSource = null
+        }
+        if (reconnectTimerId) {
+          window.clearTimeout(reconnectTimerId)
+          reconnectTimerId = null
+        }
+      }
+    }
+
+    document.addEventListener('visibilitychange', onVisible)
+    if (document.visibilityState === 'visible') connect()
 
     return () => {
       isDisposed = true
+      document.removeEventListener('visibilitychange', onVisible)
 
       if (reconnectTimerId) {
         window.clearTimeout(reconnectTimerId)
@@ -326,7 +437,7 @@ export function DocumentProvider({ children }) {
     setDocuments(prev => {
       const nextDocs = prev.map(doc =>
         String(doc.id) === String(docId) || doc.trackingNumber === docId
-          ? { ...doc, status: newStatus, ...extras }
+          ? { ...doc, status: newStatus, ...extras, updatedAt: new Date().toISOString() }
           : doc
       )
       writeDocumentsCache(user, nextDocs)
@@ -336,27 +447,103 @@ export function DocumentProvider({ children }) {
     const actualDoc = documents.find(d => String(d.id) === String(docId) || d.trackingNumber === docId)
     const backendId = actualDoc ? actualDoc.id : docId
 
+    if (!backendId) return false
+
+    updateInProgressRef.current += 1
+    updatingDocsRef.current.add(String(backendId))
+
+    return new Promise((resolve) => {
+      globalUpdateQueue = globalUpdateQueue.then(async () => {
+        try {
+          const res = await authFetch(`${API_BASE}/documents/${backendId}`, {
+            method: 'PUT',
+            body: JSON.stringify({ status: newStatus, ...extras }),
+          })
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}))
+            throw new Error(errData.error || 'Failed to update document')
+          }
+          const data = await res.json()
+          lastUpdateCompleteRef.current = Date.now()
+          if (data.document) {
+            setDocuments(prev => {
+              const idx = prev.findIndex(d => String(d.id) === String(data.document.id) || d.trackingNumber === data.document.trackingNumber)
+              if (idx >= 0) {
+                const nextDocs = [...prev]
+                const mergedDoc = mergeDocumentOptimisticState(nextDocs[idx], data.document)
+                // Explicitly protect the exact extras payload we just sent
+                if (extras.replyComments && Array.isArray(mergedDoc.replyComments)) {
+                  if (extras.replyComments.length > mergedDoc.replyComments.length) {
+                    mergedDoc.replyComments = extras.replyComments
+                  }
+                }
+                nextDocs[idx] = mergedDoc
+                return nextDocs
+              }
+              return [data.document, ...prev]
+            })
+          }
+          resolve(true)
+        } catch (err) {
+          console.error('Failed to update document:', err)
+          lastUpdateCompleteRef.current = Date.now()
+          resolve(false)
+        } finally {
+          updateInProgressRef.current = Math.max(0, updateInProgressRef.current - 1)
+          updatingDocsRef.current.delete(String(backendId))
+        }
+      })
+    })
+  }
+
+  const sendChatMessage = async (docId, newCommentObj, fieldName = 'replyComments') => {
+    // optimistic update
+    setDocuments(prev => {
+      const nextDocs = prev.map(doc => {
+        if (String(doc.id) === String(docId) || doc.trackingNumber === docId) {
+          const existing = Array.isArray(doc[fieldName]) ? doc[fieldName] : []
+          if (!existing.find(c => c.id === newCommentObj.id)) {
+            return { ...doc, [fieldName]: [...existing, newCommentObj] }
+          }
+        }
+        return doc
+      })
+      writeDocumentsCache(user, nextDocs)
+      return nextDocs
+    })
+
+    const actualDoc = documents.find(d => String(d.id) === String(docId) || d.trackingNumber === docId)
+    const backendId = actualDoc ? actualDoc.id : docId
+    if (!backendId) return false
+
     try {
       const res = await authFetch(`${API_BASE}/documents/${backendId}`, {
         method: 'PUT',
-        body: JSON.stringify({ status: newStatus, ...extras }),
+        body: JSON.stringify({ [fieldName]: [newCommentObj] }),
       })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || 'Failed to update document')
+      if (!res.ok) throw new Error('Failed to send chat message')
+      const data = await res.json()
+      lastUpdateCompleteRef.current = Date.now()
+      if (data.document) {
+        setDocuments(prev => {
+          const idx = prev.findIndex(d => String(d.id) === String(data.document.id) || d.trackingNumber === data.document.trackingNumber)
+          if (idx >= 0) {
+            const nextDocs = [...prev]
+            nextDocs[idx] = mergeDocumentOptimisticState(nextDocs[idx], data.document)
+            return nextDocs
+          }
+          return [data.document, ...prev]
+        })
       }
-      // Refetch to cleanly get any extra_data updates
-      await fetchDocuments()
       return true
     } catch (err) {
-      console.error('Failed to update document:', err)
-      await fetchDocuments()
+      console.error('sendChatMessage error:', err)
       return false
     }
   }
 
   return (
-    <DocumentContext.Provider value={{ documents, addDocument, updateDocumentStatus, loading, refreshDocuments: fetchDocuments }}>
+    <DocumentContext.Provider value={{ documents, addDocument, updateDocumentStatus, sendChatMessage, loading, refreshDocuments: fetchDocuments }}>
       {children}
     </DocumentContext.Provider>
   )

@@ -143,7 +143,7 @@ export default function DivisionDocuments({ currentUser }) {
           <table className="table doc-table division-docs-table division-page-table mb-0">
             <thead>
               <tr>
-                <th className="div-col-control">Control/Tracking #</th>
+                <th className="div-col-control">Control/Reference #</th>
                 <th className="div-col-subject">Subject</th>
                 <th className="div-col-sender">Sender</th>
                 <th className="div-col-address">Address</th>
